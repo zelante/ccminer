@@ -244,6 +244,8 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     <ClCompile Include="sph\echo.c" />
     <ClCompile Include="sph\fugue.c" />
     <ClCompile Include="sph\groestl.c" />
+    <ClCompile Include="sph\hamsi.c" />
+    <ClCompile Include="sph\hamsi_helper.c" />
     <ClCompile Include="sph\jh.c" />
     <ClCompile Include="sph\keccak.c" />
     <ClCompile Include="sph\luffa.c" />
@@ -282,6 +284,7 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
     <ClInclude Include="sph\sph_echo.h" />
     <ClInclude Include="sph\sph_fugue.h" />
     <ClInclude Include="sph\sph_groestl.h" />
+    <ClInclude Include="sph\sph_hamsi.h" />
     <ClInclude Include="sph\sph_jh.h" />
     <ClInclude Include="sph\sph_keccak.h" />
     <ClInclude Include="sph\sph_luffa.h" />
@@ -506,6 +509,9 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
       <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">-Xptxas "-abi=no -v" %(AdditionalOptions)</AdditionalOptions>
       <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Release|x64'">-Xptxas "-abi=no -v" %(AdditionalOptions)</AdditionalOptions>
     </CudaCompile>
+    <CudaCompile Include="x13\cuda_x13_fugue512.cu" />
+    <CudaCompile Include="x13\cuda_x13_hamsi512.cu" />
+    <CudaCompile Include="x13\x13.cu" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
