@@ -7,12 +7,16 @@ extern "C" {
 
 #include "cpuminer-config.h"
 
+#include <curses.h>
 #include <stdbool.h>
 #include <inttypes.h>
 #include <sys/time.h>
 #include <pthread.h>
 #include <jansson.h>
 #include <curl/curl.h>
+
+extern WINDOW *info_screen, *out_screen;
+extern int printline(WINDOW *win, bool newline, const char *fmt, ...);
 
 #ifdef WIN32
 #define snprintf(...) _snprintf(__VA_ARGS__)
@@ -59,6 +63,8 @@ enum {
 	LOG_DEBUG,
 };
 #endif
+
+
 
 #undef unlikely
 #undef likely

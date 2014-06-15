@@ -9,6 +9,7 @@
  */
 
 #define _GNU_SOURCE
+#include <curses.h>
 #include "cpuminer-config.h"
 
 #include <stdio.h>
@@ -25,6 +26,7 @@
 #if defined(WIN32)
 #include <winsock2.h>
 #include <mstcpip.h>
+
 #else
 #include <errno.h>
 #include <sys/socket.h>
@@ -66,6 +68,8 @@ struct thread_q {
 	pthread_cond_t		cond;
 };
 
+extern WINDOW *info_screen, *out_screen;
+
 void applog(int prio, const char *fmt, ...)
 {
 	va_list ap;
@@ -103,6 +107,7 @@ void applog(int prio, const char *fmt, ...)
 
 		len = (int)(40 + strlen(fmt) + 2);
 		f = (char*)alloca(len);
+		
 		sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d] %s\n",
 			tm.tm_year + 1900,
 			tm.tm_mon + 1,
@@ -112,8 +117,9 @@ void applog(int prio, const char *fmt, ...)
 			tm.tm_sec,
 			fmt);
 		pthread_mutex_lock(&applog_lock);
-		vfprintf(stderr, f, ap);	/* atomic write to stderr */
-		fflush(stderr);
+		//vfprintf(stderr, f, ap);	/* atomic write to stderr */
+		vwprintw(out_screen, fmt, ap);
+		//fflush(stderr);
 		pthread_mutex_unlock(&applog_lock);
 	}
 	va_end(ap);

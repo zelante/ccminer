@@ -8,6 +8,8 @@
  * any later version.  See COPYING for more details.
  */
 
+#include <curses.h>
+
 #include "cpuminer-config.h"
 #define _GNU_SOURCE
 
@@ -19,8 +21,10 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <time.h>
+#include <hw_nvidia.h>
 #ifdef WIN32
 #include <windows.h>
+#include "nvapi.h"
 #else
 #include <errno.h>
 #include <signal.h>
@@ -35,6 +39,7 @@
 #endif
 #include <jansson.h>
 #include <curl/curl.h>
+#include <curl/easy.h>
 #include <openssl/sha.h>
 #include "compat.h"
 #include "miner.h"
@@ -45,6 +50,7 @@
 #endif
 
 #define PROGRAM_NAME		"minerd"
+#define PROGRAM_VERSION "1.1"
 #define LP_SCANTIME		60
 #define HEAVYCOIN_BLKHDR_SZ		84
 #define MNR_BLKHDR_SZ 80
@@ -61,6 +67,7 @@ int cuda_finddevice(char *name);
 }
 #endif
 
+WINDOW *info_screen, *out_screen;
 
 #ifdef __linux /* Linux specific policy and affinity management */
 #include <sched.h>
@@ -192,6 +199,10 @@ static unsigned long accepted_count = 0L;
 static unsigned long rejected_count = 0L;
 static double *thr_hashrates;
 
+struct upload_buffer { const void *buf; size_t len; };
+struct MemoryStruct { char *memory; size_t size; };
+
+
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
 #else
@@ -202,6 +213,138 @@ struct option {
 	int val;
 };
 #endif
+
+int parent_x, parent_y, new_x, new_y;
+
+void SetWindow(int Width, int Height) 
+{ 
+    _COORD coord; 
+    coord.X = Width; 
+    coord.Y = Height; 
+
+    _SMALL_RECT Rect; 
+    Rect.Top = 0; 
+    Rect.Left = 0; 
+    Rect.Bottom = Height - 1; 
+    Rect.Right = Width - 1; 
+
+    HANDLE Handle = GetStdHandle(STD_OUTPUT_HANDLE);      // Get Handle 
+    SetConsoleScreenBufferSize(Handle, coord);            // Set Buffer Size 
+    SetConsoleWindowInfo(Handle, TRUE, &Rect);            // Set Window Size 
+} 
+
+void updatescr()
+{
+	//wclear(info_screen);
+	wrefresh(out_screen);
+	wrefresh(info_screen);	
+}
+
+int printline(WINDOW *win, bool newline, const char *fmt, ...) {
+    va_list args;
+    int retval;
+
+    va_start(args, fmt);
+		char *f;
+		int len;
+		time_t now;
+		struct tm tm, *tm_p;
+	
+		time(&now);
+
+		pthread_mutex_lock(&applog_lock);
+		tm_p = localtime(&now);
+		memcpy(&tm, tm_p, sizeof(tm));
+		pthread_mutex_unlock(&applog_lock);
+
+		len = (int)(40 + strlen(fmt) + 2);
+		f = (char*)alloca(len);
+		
+		sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d] %s",
+			tm.tm_year + 1900,
+			tm.tm_mon + 1,
+			tm.tm_mday,
+			tm.tm_hour,
+			tm.tm_min,
+			tm.tm_sec,
+			fmt);
+
+		pthread_mutex_lock(&applog_lock);
+		retval = vwprintw(win, f, args);
+		if (newline)
+			wprintw(win, "\n");
+		updatescr();
+		pthread_mutex_unlock(&applog_lock);
+    va_end(args);
+	return retval;
+}
+
+static void destroywins(void) {
+	delwin(info_screen);
+	delwin(out_screen);
+    endwin();
+}
+
+
+int nvapi_init(){
+	NvDisplayHandle hDisplay_a[NVAPI_MAX_PHYSICAL_GPUS*2] = {0};
+	NvAPI_Status ret = NVAPI_OK;
+	ret = NvAPI_Initialize();
+    if(ret != NVAPI_OK)
+    {
+        printline(info_screen, true, "NvAPI_Initialize() failed = 0x%x", ret);
+		return 1; // Initialization failed
+    }
+	printline(info_screen, false, "\nDisplay Configuration Successful!\n");
+	
+	NvU32 cnt;
+	NvPhysicalGpuHandle phys;
+    ret = NvAPI_EnumPhysicalGPUs(&phys, &cnt);
+    if (!ret == NVAPI_OK){
+        NvAPI_ShortString string;
+        NvAPI_GetErrorMessage(ret, string);
+        printline(info_screen, false, "NVAPI NvAPI_EnumPhysicalGPUs: %s\n", string);
+    }
+	NV_GPU_THERMAL_SETTINGS thermal;
+    thermal.version =NV_GPU_THERMAL_SETTINGS_VER;
+    ret = NvAPI_GPU_GetThermalSettings(phys,0, &thermal);
+
+    if (!ret == NVAPI_OK){
+        NvAPI_ShortString string;
+        NvAPI_GetErrorMessage(ret, string);
+        printline(info_screen, false, "NVAPI NvAPI_GPU_GetThermalSettings: %s\n", string);
+    }
+
+   printline(info_screen, false, "Temp: %u C\n", thermal.sensor[0].currentTemp);
+    return 0;
+}
+
+int gpuinfo(int id, double dif, double balance) {
+	int ret;
+	char *s;
+	pthread_mutex_lock(&applog_lock);
+	mvwprintw(info_screen, 0, 1, "ccMiner %s for nVidia GPUs by Christian Buchner and Christian H.", PROGRAM_VERSION);
+	for (int i=0; i<opt_n_threads; ++i)	
+			{	
+				ret=mvwprintw(info_screen, i+2, 0, "GPU #%d: %s %.0fkhash/s %uC %u%% %uMHz %uMHz %uMb", 
+					device_map[i], 
+					device_name[i],
+					thr_hashrates[i] * 1e-3,
+					hw_nvidia_gettemperature(i),
+					hw_nvidia_DynamicPstateInfoEx(i),
+					hw_nvidia_clock(i),
+					hw_nvidia_clockMemory(i),
+					hw_nvidia_memory(i));
+			}
+	if (rpc_url)
+		mvwprintw(info_screen, parent_y/2-2, 0, "%s", rpc_url);
+	/*else if (rpc_url && !have_stratum) 
+		mvwprintw(info_screen, parent_y/2-2, 0, "%s diff:%.4f balance:%.8f", rpc_url, dif, balance);*/
+	updatescr();
+	pthread_mutex_unlock(&applog_lock);
+	return ret;
+}
+
 
 static char const usage[] = "\
 Usage: " PROGRAM_NAME " [OPTIONS]\n\
@@ -323,12 +466,14 @@ static bool jobj_binary(const json_t *obj, const char *key,
 
 	tmp = json_object_get(obj, key);
 	if (unlikely(!tmp)) {
-		applog(LOG_ERR, "JSON key '%s' not found", key);
+		//applog(LOG_ERR, "JSON key '%s' not found", key);
+		printline(out_screen, true, "JSON key '%s' not found", key);
 		return false;
 	}
 	hexstr = json_string_value(tmp);
 	if (unlikely(!hexstr)) {
-		applog(LOG_ERR, "JSON key '%s' is not a string", key);
+		//applog(LOG_ERR, "JSON key '%s' is not a string", key);
+		printline(out_screen, true, "JSON key '%s' is not a string", key);
 		return false;
 	}
 	if (!hex2bin((unsigned char*)buf, hexstr, buflen))
@@ -342,11 +487,13 @@ static bool work_decode(const json_t *val, struct work *work)
 	int i;
 	
 	if (unlikely(!jobj_binary(val, "data", work->data, sizeof(work->data)))) {
-		applog(LOG_ERR, "JSON inval data");
+		//applog(LOG_ERR, "JSON inval data");
+		printline(out_screen, true, "JSON inval data");
 		goto err_out;
 	}
 	if (unlikely(!jobj_binary(val, "target", work->target, sizeof(work->target)))) {
-		applog(LOG_ERR, "JSON inval target");
+		//applog(LOG_ERR, "JSON inval target");
+		printline(out_screen, true, "JSON inval target");
 		goto err_out;
 	}
 	if (opt_algo == ALGO_HEAVY) {
@@ -380,16 +527,121 @@ static void share_result(int result, const char *reason)
 	pthread_mutex_unlock(&stats_lock);
 	
 	sprintf(s, hashrate >= 1e6 ? "%.0f" : "%.2f", 1e-3 * hashrate);
-	applog(LOG_INFO, "accepted: %lu/%lu (%.2f%%), %s khash/s %s",
+	printline(out_screen, true, "accepted: %lu/%lu (%.2f%%), %s khash/s %s",
 		   accepted_count,
 		   accepted_count + rejected_count,
 		   100. * accepted_count / (accepted_count + rejected_count),
 		   s,
 		   result ? "(yay!!!)" : "(booooo)");
 
+	/*applog(LOG_INFO, "accepted: %lu/%lu (%.2f%%), %s khash/s %s",
+		   accepted_count,
+		   accepted_count + rejected_count,
+		   100. * accepted_count / (accepted_count + rejected_count),
+		   s,
+		   result ? "(yay!!!)" : "(booooo)");*/
+
 	if (opt_debug && reason)
-		applog(LOG_DEBUG, "DEBUG: reject reason: %s", reason);
+	//if (reason)
+		//applog(LOG_DEBUG, "DEBUG: reject reason: %s", reason);
+		printline(out_screen, true, "DEBUG: reject reason: %s", reason);
 }
+
+
+static size_t WriteMemoryCallback(void *ptr,size_t size,size_t nmemb,void *data)
+{
+    size_t realsize = size * nmemb;
+    struct MemoryStruct *mem = (struct MemoryStruct *)data;
+    //printf("WriteMemoryCallback\n");
+    mem->memory = (char *)realloc(mem->memory, mem->size + realsize + 1);
+    if (mem->memory) {
+        memcpy(&(mem->memory[mem->size]), ptr, realsize);
+        mem->size += realsize;
+        mem->memory[mem->size] = 0;
+    }
+    return realsize;
+}
+
+static size_t upload_data_cb(void *ptr,size_t size,size_t nmemb,void *user_data)
+{
+	//struct upload_buffer *ub = user_data;
+	struct upload_buffer *ub = (upload_buffer *)user_data;
+    int len = (int)(size * nmemb);
+    if ( len > ub->len )
+        len = (int)ub->len;
+    if ( len != 0 )
+    {
+        memcpy(ptr,ub->buf,len);
+		//ub->buf += len;
+		ub->buf = (char *)ub->buf + len;
+        ub->len -= len;
+    }
+    return len;
+}
+
+char *bitcoind_RPC(int numretries,char *url,char *userpass,char *command,char *args)
+{
+    char *retstr,*quote;
+    CURL *curl_handlez;
+    CURLcode res;
+    char len_hdr[1024],databuf[1024];
+    struct curl_slist *headers = NULL;
+    struct upload_buffer upload_data;
+    struct MemoryStruct chunk;
+    if ( args == 0 )
+        args = "";
+retry:
+    chunk.memory = (char *)malloc(1);     // will be grown as needed by the realloc above
+    chunk.size = 0;                 // no data at this point
+    //curl_global_init(CURL_GLOBAL_ALL); //init the curl session
+    curl_handlez = curl_easy_init();
+    curl_easy_setopt(curl_handlez,CURLOPT_SSL_VERIFYHOST,0);
+    curl_easy_setopt(curl_handlez,CURLOPT_SSL_VERIFYPEER,0);
+    curl_easy_setopt(curl_handlez,CURLOPT_URL,url);
+    curl_easy_setopt(curl_handlez,CURLOPT_WRITEFUNCTION,WriteMemoryCallback); // send all data to this function
+    curl_easy_setopt(curl_handlez,CURLOPT_WRITEDATA,(void *)&chunk); // we pass our 'chunk' struct to the callback function
+    curl_easy_setopt(curl_handlez,CURLOPT_USERAGENT,"libcurl-agent/1.0"); // some servers don't like requests that are made without a user-agent field, so we provide one
+    if ( userpass != 0 )
+        curl_easy_setopt(curl_handlez,CURLOPT_USERPWD,userpass);
+    if ( command != 0 )
+    {
+        curl_easy_setopt(curl_handlez,CURLOPT_READFUNCTION,upload_data_cb);
+        curl_easy_setopt(curl_handlez,CURLOPT_READDATA,&upload_data);
+        curl_easy_setopt(curl_handlez,CURLOPT_POST,1);
+        if ( args[0] != 0 )
+            quote = "\"";
+        else quote = "";
+        sprintf(databuf,"{\"id\":\"jl777\",\"method\":\"%s\",\"params\":[%s%s%s]}",command,quote,args,quote);
+        upload_data.buf = databuf;
+        upload_data.len = strlen(databuf);
+        sprintf(len_hdr, "Content-Length: %lu",(unsigned long)upload_data.len);
+        headers = curl_slist_append(headers,"Content-type: application/json");
+        headers = curl_slist_append(headers,len_hdr);
+        curl_easy_setopt(curl_handlez,CURLOPT_HTTPHEADER,headers);
+    }
+    res = curl_easy_perform(curl_handlez);
+    if ( res != CURLE_OK )
+    {
+        fprintf(stderr, "curl_easy_perform() failed: %s (%s %s %s %s)\n",curl_easy_strerror(res),url,userpass,command,args);
+        sleep(30);
+        if ( numretries-- > 0 )
+        {
+            free(chunk.memory);
+            curl_easy_cleanup(curl_handlez);
+            goto retry;
+        }
+    }
+    else
+    {
+        // printf("%lu bytes retrieved [%s]\n", (int64_t )chunk.size,chunk.memory);
+    }
+    curl_easy_cleanup(curl_handlez);
+    retstr = (char *)malloc(strlen(chunk.memory)+1);
+    strcpy(retstr,chunk.memory);
+    free(chunk.memory);
+    return(retstr);
+}
+
 
 static bool submit_upstream_work(CURL *curl, struct work *work)
 {
@@ -402,7 +654,8 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 	/* pass if the previous hash is not the current previous hash */
 	if (memcmp(work->data + 1, g_work.data + 1, 32)) {
 		if (opt_debug)
-			applog(LOG_DEBUG, "DEBUG: stale work detected, discarding");
+			//applog(LOG_DEBUG, "DEBUG: stale work detected, discarding");
+			printline(out_screen, true, "DEBUG: stale work detected, discarding");
 		return true;
 	}
 
@@ -434,7 +687,8 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		free(nvotestr);
 
 		if (unlikely(!stratum_send_line(&stratum, s))) {
-			applog(LOG_ERR, "submit_upstream_work stratum_send_line failed");
+			//applog(LOG_ERR, "submit_upstream_work stratum_send_line failed");
+			printline(out_screen, true, "submit_upstream_work stratum_send_line failed");
 			goto out;
 		}
 	} else {
@@ -447,7 +701,8 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 			}
 			str = bin2hex((unsigned char *)work->data, sizeof(work->data));
 			if (unlikely(!str)) {
-				applog(LOG_ERR, "submit_upstream_work OOM");
+				//applog(LOG_ERR, "submit_upstream_work OOM");
+				printline(out_screen, true, "submit_upstream_work OOM");
 				goto out;
 		}
 
@@ -459,7 +714,8 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		/* issue JSON-RPC request */
 		val = json_rpc_call(curl, rpc_url, rpc_userpass, s, false, false, NULL);
 		if (unlikely(!val)) {
-			applog(LOG_ERR, "submit_upstream_work json_rpc_call failed");
+			//applog(LOG_ERR, "submit_upstream_work json_rpc_call failed");
+			printline(out_screen, true, "submit_upstream_work json_rpc_call failed");
 			goto out;
 		}
 
@@ -504,7 +760,9 @@ static bool get_upstream_work(CURL *curl, struct work *work)
 
 	if (opt_debug && rc) {
 		timeval_subtract(&diff, &tv_end, &tv_start);
-		applog(LOG_DEBUG, "DEBUG: got new work in %d ms",
+		/*applog(LOG_DEBUG, "DEBUG: got new work in %d ms",
+		       diff.tv_sec * 1000 + diff.tv_usec / 1000);*/
+		printline(out_screen, true, "DEBUG: got new work in %d ms",
 		       diff.tv_sec * 1000 + diff.tv_usec / 1000);
 	}
 
@@ -542,13 +800,16 @@ static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
 	/* obtain new work from bitcoin via JSON-RPC */
 	while (!get_upstream_work(curl, ret_work)) {
 		if (unlikely((opt_retries >= 0) && (++failures > opt_retries))) {
-			applog(LOG_ERR, "json_rpc_call failed, terminating workio thread");
+			//applog(LOG_ERR, "json_rpc_call failed, terminating workio thread");
+			printline(out_screen, true, "json_rpc_call failed, terminating workio thread");
 			free(ret_work);
 			return false;
 		}
 
 		/* pause, then restart work-request loop */
-		applog(LOG_ERR, "json_rpc_call failed, retry after %d seconds",
+		/*applog(LOG_ERR, "json_rpc_call failed, retry after %d seconds",
+			opt_fail_pause);*/
+		printline(out_screen, true, "json_rpc_call failed, retry after %d seconds",
 			opt_fail_pause);
 		sleep(opt_fail_pause);
 	}
@@ -567,12 +828,15 @@ static bool workio_submit_work(struct workio_cmd *wc, CURL *curl)
 	/* submit solution to bitcoin via JSON-RPC */
 	while (!submit_upstream_work(curl, wc->u.work)) {
 		if (unlikely((opt_retries >= 0) && (++failures > opt_retries))) {
-			applog(LOG_ERR, "...terminating workio thread");
+			printline(out_screen, true, "...terminating workio thread");
+			//applog(LOG_ERR, "...terminating workio thread");
 			return false;
 		}
 
 		/* pause, then restart work-request loop */
-		applog(LOG_ERR, "...retry after %d seconds",
+		/*applog(LOG_ERR, "...retry after %d seconds",
+			opt_fail_pause);*/
+		printline(out_screen, true, "...retry after %d seconds",
 			opt_fail_pause);
 		sleep(opt_fail_pause);
 	}
@@ -588,7 +852,8 @@ static void *workio_thread(void *userdata)
 
 	curl = curl_easy_init();
 	if (unlikely(!curl)) {
-		applog(LOG_ERR, "CURL initialization failed");
+		printline(out_screen, true, "CURL initialization failed");
+		//applog(LOG_ERR, "CURL initialization failed");
 		return NULL;
 	}
 
@@ -759,7 +1024,9 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 
 	if (opt_debug) {
 		char *xnonce2str = bin2hex(work->xnonce2, sctx->xnonce2_size);
-		applog(LOG_DEBUG, "DEBUG: job_id='%s' extranonce2=%s ntime=%08x",
+		/*applog(LOG_DEBUG, "DEBUG: job_id='%s' extranonce2=%s ntime=%08x",
+		       work->job_id, xnonce2str, swab32(work->data[17]));*/
+		printline(out_screen, true, "DEBUG: job_id='%s' extranonce2=%s ntime=%08x",
 		       work->job_id, xnonce2str, swab32(work->data[17]));
 		free(xnonce2str);
 	}
@@ -783,6 +1050,13 @@ static void *miner_thread(void *userdata)
 	char s[16];
 	int i;
     static int rounds = 0;
+	
+	const char *key;
+	json_t *valu;
+	json_error_t error;
+	json_t *value, *array;
+	double balance,dif;
+
 
 	memset(&work, 0, sizeof(work)); // prevent work from being used uninitialized
 
@@ -798,8 +1072,10 @@ static void *miner_thread(void *userdata)
 	 * of the number of CPUs */
 	if (num_processors > 1 && opt_n_threads % num_processors == 0) {
 		if (!opt_quiet)
-			applog(LOG_INFO, "Binding thread %d to cpu %d",
+			printline(out_screen, true, "Binding thread %d to cpu %d",
 			       thr_id, thr_id % num_processors);
+			//applog(LOG_INFO, "Binding thread %d to cpu %d",
+			//      thr_id, thr_id % num_processors);
 		affine_to_cpu(thr_id, thr_id % num_processors);
 	}
 
@@ -810,7 +1086,7 @@ static void *miner_thread(void *userdata)
 		int rc;
 
 		if (have_stratum) {
-			while (time(NULL) >= g_work_time + 120)
+			while (time(NULL) >= g_work_time + 60)
 				sleep(1);
 			pthread_mutex_lock(&g_work_lock);
 			if (work.data[19] >= end_nonce)
@@ -822,8 +1098,10 @@ static void *miner_thread(void *userdata)
 					time(NULL) >= g_work_time + LP_SCANTIME*3/4 ||
 					work.data[19] >= end_nonce)) {
 				if (unlikely(!get_work(mythr, &g_work))) {
-					applog(LOG_ERR, "work retrieval failed, exiting "
+					printline(out_screen, true, "work retrieval failed, exiting "
 						"mining thread %d", mythr->id);
+					//applog(LOG_ERR, "work retrieval failed, exiting "
+					//	"mining thread %d", mythr->id);
 					pthread_mutex_unlock(&g_work_lock);
 					goto out;
 				}
@@ -917,8 +1195,11 @@ static void *miner_thread(void *userdata)
 			goto out;
 		}
 
-//        if (opt_benchmark)
-//            if (++rounds == 1) exit(0);
+        if (opt_benchmark)
+            if (++rounds == 1) {
+				destroywins();
+				exit(0);
+			}
 
 		/* record scanhash elapsed time */
 		gettimeofday(&tv_end, NULL);
@@ -929,11 +1210,40 @@ static void *miner_thread(void *userdata)
 				hashes_done / (diff.tv_sec + 1e-6 * diff.tv_usec);
 			pthread_mutex_unlock(&stats_lock);
 		}
+
+		if (thr_hashrates[thr_id] > 1e8){
+			printline(out_screen, true, "abnormal hashes %f, exiting with code 211!", thr_hashrates[thr_id]);
+			//applog(LOG_ERR, "abnormal hashes %f, exiting with code 211!", thr_hashrates[thr_id]);
+			destroywins();
+			exit(211);
+        }
+
+		/*if (have_stratum) {
+			
+		} else {
+			char *rpcinfo = bitcoind_RPC(3,rpc_url,rpc_userpass,"getinfo",0);
+			//char *rpcinfo;
+			//mvwprintw(info_screen, 6, 0, rpcinfo);
+			value = json_loads( rpcinfo, &error);
+			if ( !value )
+				mvwprintw(info_screen, 6, 0, "error: on line %d: %s", error.line, error.text );
+			array = json_object_get(value, "result");
+			balance=json_real_value(json_object_get(array,"balance"));
+			dif=json_real_value(json_object_get(array,"difficulty"));
+			//json_decref(array);
+			//json_decref(value);
+		}*/
+
+		gpuinfo(thr_id,dif,balance);
+
 		if (!opt_quiet) {
 			sprintf(s, thr_hashrates[thr_id] >= 1e6 ? "%.0f" : "%.2f",
 				1e-3 * thr_hashrates[thr_id]);
-			applog(LOG_INFO, "GPU #%d: %s, %s khash/s",
+			printline(out_screen, true, "GPU #%d: %s, %s khash/s",
 				device_map[thr_id], device_name[thr_id], s);
+
+			/*applog(LOG_INFO, "GPU #%d: %s, %s khash/s",
+				device_map[thr_id], device_name[thr_id], s);*/
 //			applog(LOG_INFO, "thread %d: %lu hashes, %s khash/s",
 //				thr_id, hashes_done, s);
 		}
@@ -943,7 +1253,8 @@ static void *miner_thread(void *userdata)
 				hashrate += thr_hashrates[i];
 			if (i == opt_n_threads) {
 				sprintf(s, hashrate >= 1e6 ? "%.0f" : "%.2f", 1e-3 * hashrate);
-				applog(LOG_INFO, "Total: %s khash/s", s);
+				printline(out_screen, true, "Total: %s khash/s", s);
+				//applog(LOG_INFO, "Total: %s khash/s", s);
 			}
 		}
 
@@ -975,7 +1286,8 @@ static void *longpoll_thread(void *userdata)
 
 	curl = curl_easy_init();
 	if (unlikely(!curl)) {
-		applog(LOG_ERR, "CURL initialization failed");
+		//applog(LOG_ERR, "CURL initialization failed");
+		printline(out_screen, true, "CURL initialization failed");
 		goto out;
 	}
 
@@ -1003,7 +1315,8 @@ start:
 		sprintf(lp_url, "%s%s%s", rpc_url, need_slash ? "/" : "", copy_start);
 	}
 
-	applog(LOG_INFO, "Long-polling activated for %s", lp_url);
+	//applog(LOG_INFO, "Long-polling activated for %s", lp_url);
+	printline(out_screen, true, "Long-polling activated for %s", lp_url);
 
 	while (1) {
 		json_t *val, *soval;
@@ -1017,13 +1330,14 @@ start:
 			goto out;
 		}
 		if (likely(val)) {
-			if (!opt_quiet) applog(LOG_INFO, "LONGPOLL detected new block");
+			if (!opt_quiet) printline(out_screen, true, "LONGPOLL detected new block");//applog(LOG_INFO, "LONGPOLL detected new block");
 			soval = json_object_get(json_object_get(val, "result"), "submitold");
 			submit_old = soval ? json_is_true(soval) : false;
 			pthread_mutex_lock(&g_work_lock);
 			if (work_decode(json_object_get(val, "result"), &g_work)) {
 				if (opt_debug)
-					applog(LOG_DEBUG, "DEBUG: got new work");
+					//applog(LOG_DEBUG, "DEBUG: got new work");
+					printline(out_screen, true, "DEBUG: got new work");
 				time(&g_work_time);
 				restart_threads();
 			}
@@ -1065,7 +1379,8 @@ static bool stratum_handle_response(char *buf)
 
 	val = JSON_LOADS(buf, &err);
 	if (!val) {
-		applog(LOG_INFO, "JSON decode failed(%d): %s", err.line, err.text);
+		//applog(LOG_INFO, "JSON decode failed(%d): %s", err.line, err.text);
+		printline(out_screen, true, "JSON decode failed(%d): %s", err.line, err.text);
 		goto out;
 	}
 
@@ -1095,7 +1410,8 @@ static void *stratum_thread(void *userdata)
 	stratum.url = (char*)tq_pop(mythr->q, NULL);
 	if (!stratum.url)
 		goto out;
-	applog(LOG_INFO, "Starting Stratum on %s", stratum.url);
+	printline(out_screen, true, "Starting Stratum on %s", stratum.url);
+	//applog(LOG_INFO, "Starting Stratum on %s", stratum.url);
 
 	while (1) {
 		int failures = 0;
@@ -1111,11 +1427,13 @@ static void *stratum_thread(void *userdata)
 			    !stratum_authorize(&stratum, rpc_user, rpc_pass)) {
 				stratum_disconnect(&stratum);
 				if (opt_retries >= 0 && ++failures > opt_retries) {
-					applog(LOG_ERR, "...terminating workio thread");
+					printline(out_screen, true, "..terminating workio thread");
+					//applog(LOG_ERR, "...terminating workio thread");
 					tq_push(thr_info[work_thr_id].q, NULL);
 					goto out;
 				}
-				applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
+				printline(out_screen, true, "...retry after %d seconds", opt_fail_pause);
+				//applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
 				sleep(opt_fail_pause);
 			}
 		}
@@ -1127,19 +1445,21 @@ static void *stratum_thread(void *userdata)
 			time(&g_work_time);
 			pthread_mutex_unlock(&g_work_lock);
 			if (stratum.job.clean) {
-				if (!opt_quiet) applog(LOG_INFO, "Stratum detected new block");
+				if (!opt_quiet) printline(out_screen, true, "Stratum detected new block");//applog(LOG_INFO, "Stratum detected new block");
 				restart_threads();
 			}
 		}
 		
-		if (!stratum_socket_full(&stratum, 120)) {
-			applog(LOG_ERR, "Stratum connection timed out");
+		if (!stratum_socket_full(&stratum, 60)) {
+			printline(out_screen, true, "Stratum connection timed out");
+			//applog(LOG_ERR, "Stratum connection timed out");
 			s = NULL;
 		} else
 			s = stratum_recv_line(&stratum);
 		if (!s) {
 			stratum_disconnect(&stratum);
-			applog(LOG_ERR, "Stratum connection interrupted");
+			printline(out_screen, true, "Stratum connection interrupted");
+			//applog(LOG_ERR, "Stratum connection interrupted");
 			continue;
 		}
 		if (!stratum_handle_method(&stratum, s))
@@ -1153,16 +1473,21 @@ out:
 
 static void show_version_and_exit(void)
 {
-	printf("%s\n%s\n", PACKAGE_STRING, curl_version());
+	printline(out_screen, false, "%s\n%s\n", PACKAGE_STRING, curl_version());
+	//printf("%s\n%s\n", PACKAGE_STRING, curl_version());
+	destroywins();
 	exit(0);
 }
 
 static void show_usage_and_exit(int status)
 {
 	if (status)
-		fprintf(stderr, "Try `" PROGRAM_NAME " --help' for more information.\n");
+		printline(out_screen, false, "Try `" PROGRAM_NAME " --help' for more information.\n");
+		//fprintf(stderr, "Try `" PROGRAM_NAME " --help' for more information.\n");
 	else
-		printf(usage);
+		printline(out_screen, false, "%s", usage);
+		//printf(usage);
+	destroywins();
 	exit(status);
 }
 
@@ -1197,7 +1522,9 @@ static void parse_arg (int key, char *arg)
 		opt_config = json_load_file(arg, &err);
 #endif
 		if (!json_is_object(opt_config)) {
-			applog(LOG_ERR, "JSON decode of %s failed", arg);
+			printline(out_screen, true, "JSON decode of %s failed", arg);
+			//applog(LOG_ERR, "JSON decode of %s failed", arg);
+			destroywins();
 			exit(1);
 		}
 		break;
@@ -1352,7 +1679,9 @@ static void parse_arg (int key, char *arg)
 					if (atoi(pch) < num_processors)
 						device_map[opt_n_threads++] = atoi(pch);
 					else {
-						applog(LOG_ERR, "Non-existant CUDA device #%d specified in -d option", atoi(pch));
+						printline(out_screen, true, "Non-existant CUDA device #%d specified in -d option", atoi(pch));
+						//applog(LOG_ERR, "Non-existant CUDA device #%d specified in -d option", atoi(pch));
+						destroywins();
 						exit(1);
 					}
 				} else {
@@ -1360,7 +1689,9 @@ static void parse_arg (int key, char *arg)
 					if (device >= 0 && device < num_processors)
 						device_map[opt_n_threads++] = device;
 					else {
-						applog(LOG_ERR, "Non-existant CUDA device '%s' specified in -d option", pch);
+						printline(out_screen, true, "Non-existant CUDA device '%s' specified in -d option", pch);
+						//applog(LOG_ERR, "Non-existant CUDA device '%s' specified in -d option", pch);
+						destroywins();
 						exit(1);
 					}
 				}
@@ -1410,12 +1741,15 @@ static void parse_config(void)
 		} else if (!options[i].has_arg && json_is_true(val))
 			parse_arg(options[i].val, "");
 		else
-			applog(LOG_ERR, "JSON option %s invalid",
+			/*applog(LOG_ERR, "JSON option %s invalid",
+				options[i].name);*/
+			printline(out_screen, true, "JSON option %s invalid",
 				options[i].name);
 	}
 
 	if (opt_algo == ALGO_HEAVY && opt_vote == 9999) {
-		fprintf(stderr, "Heavycoin hash requires block reward vote parameter (see --vote)\n");
+		printline(out_screen, false, "Heavycoin hash requires block reward vote parameter (see --vote)\n");
+		//fprintf(stderr, "Heavycoin hash requires block reward vote parameter (see --vote)\n");
 		show_usage_and_exit(1);
 	}
 }
@@ -1436,14 +1770,18 @@ static void parse_cmdline(int argc, char *argv[])
 		parse_arg(key, optarg);
 	}
 	if (optind < argc) {
-		fprintf(stderr, "%s: unsupported non-option argument '%s'\n",
+		printline(out_screen, false, "%s: unsupported non-option argument '%s'\n",
 			argv[0], argv[optind]);
+		//fprintf(stderr, "%s: unsupported non-option argument '%s'\n",
+		//	argv[0], argv[optind]);
 		show_usage_and_exit(1);
 	}
 
 	if (opt_algo == ALGO_HEAVY && opt_vote == 9999) {
-		fprintf(stderr, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
+		printline(out_screen, false, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
 			argv[0]);
+		//fprintf(stderr, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
+		//	argv[0]);
 		show_usage_and_exit(1);
 	}
 
@@ -1455,43 +1793,68 @@ static void signal_handler(int sig)
 {
 	switch (sig) {
 	case SIGHUP:
-		applog(LOG_INFO, "SIGHUP received");
+		//applog(LOG_INFO, "SIGHUP received");
+		printline(out_screen, true, "SIGHUP received");
 		break;
 	case SIGINT:
-		applog(LOG_INFO, "SIGINT received, exiting");
+		//applog(LOG_INFO, "SIGINT received, exiting");
+		printline(out_screen, true, "SIGINT received, exiting");
 		exit(0);
 		break;
 	case SIGTERM:
-		applog(LOG_INFO, "SIGTERM received, exiting");
+		//applog(LOG_INFO, "SIGTERM received, exiting");
+		printline(out_screen, true, "SIGTERM received, exiting");
 		exit(0);
 		break;
 	}
 }
 #endif
 
-#define PROGRAM_VERSION "1.1"
 int main(int argc, char *argv[])
 {
 	struct thr_info *thr;
 	long flags;
 	int i;
 
+	SetWindow(85,30);
+	initscr();
+	
+	getmaxyx(stdscr, parent_y, parent_x);
+	// set up initial windows
+	info_screen = newwin(parent_y / 2, parent_x, 0, 0);
+	out_screen = newwin(parent_y /2, parent_x, parent_y / 2 , 0);
+	scrollok(out_screen, TRUE);
+	scrollok(info_screen, TRUE);
+
 #ifdef WIN32
 	SYSTEM_INFO sysinfo;
 #endif
+	start_color();
+	init_pair(1, COLOR_GREEN, COLOR_BLACK); 
+	init_pair(2, COLOR_WHITE, COLOR_BLACK);
 
-	printf("     *** ccMiner for nVidia GPUs by Christian Buchner and Christian H. ***\n");
-	printf("\t             This is version "PROGRAM_VERSION" (beta)\n");
-	printf("\t  based on pooler-cpuminer 2.3.2 (c) 2010 Jeff Garzik, 2012 pooler\n");
-	printf("\t  based on pooler-cpuminer extension for HVC from\n\t       https://github.com/heavycoin/cpuminer-heavycoin\n");
-	printf("\t\t\tand\n\t       http://hvc.1gh.com/\n");
-	printf("\tCuda additions Copyright 2014 Christian Buchner, Christian H.\n");
-	printf("\t  LTC donation address: LKS1WDKGED647msBQfLBHV3Ls8sveGncnm\n");
-	printf("\t  BTC donation address: 16hJF5mceSojnTD3ZTUDqdRhDyPJzoRakM\n");
-	printf("\t  YAC donation address: Y87sptDEcpLkLeAuex6qZioDbvy1qXZEj4\n");
 
+	wcolor_set(out_screen, 1, NULL);
+	//updatescr();
+
+	//printf
+	vwprintw(out_screen, "     *** ccMiner for nVidia GPUs by Christian Buchner and Christian H. ***\n", NULL);
+	vwprintw(out_screen, "\t             This is version "PROGRAM_VERSION" (beta)\n", NULL);
+	vwprintw(out_screen, "\t  based on pooler-cpuminer 2.3.2 (c) 2010 Jeff Garzik, 2012 pooler\n", NULL);
+	vwprintw(out_screen, "\t  based on pooler-cpuminer extension for HVC from\n\t       https://github.com/heavycoin/cpuminer-heavycoin\n", NULL);
+	vwprintw(out_screen, "\t\t\tand\n\t       http://hvc.1gh.com/\n", NULL);
+	vwprintw(out_screen, "\tCuda additions Copyright 2014 Christian Buchner, Christian H.\n", NULL);
+	vwprintw(out_screen, "\t  LTC donation address: LKS1WDKGED647msBQfLBHV3Ls8sveGncnm\n", NULL);
+	vwprintw(out_screen, "\t  BTC donation address: 16hJF5mceSojnTD3ZTUDqdRhDyPJzoRakM\n", NULL);
+	vwprintw(out_screen, "\t  YAC donation address: Y87sptDEcpLkLeAuex6qZioDbvy1qXZEj4\n", NULL);
+	updatescr();
+	wcolor_set(out_screen, 2, NULL);
 	rpc_user = strdup("");
 	rpc_pass = strdup("");
+
+	//cuda_devicenames();
+	//num_processors = cuda_num_devices();
+	//gpuinfo();
 
 	pthread_mutex_init(&applog_lock, NULL);
 	num_processors = cuda_num_devices();
@@ -1500,9 +1863,13 @@ int main(int argc, char *argv[])
 	parse_cmdline(argc, argv);
 
 	cuda_devicenames();
+	nw_nvidia_init();
+//	gpuinfo();
+	wborder(info_screen,' ', ' ', '_', '_', '_', '_', '_', '_');
 
 	if (!opt_benchmark && !rpc_url) {
-		fprintf(stderr, "%s: no URL supplied\n", argv[0]);
+		printline(out_screen, false, "%s: no URL supplied\n", argv[0]);
+		//fprintf(stderr, "%s: no URL supplied\n", argv[0]);
 		show_usage_and_exit(1);
 	}
 
@@ -1522,7 +1889,8 @@ int main(int argc, char *argv[])
 	      ? (CURL_GLOBAL_ALL & ~CURL_GLOBAL_SSL)
 	      : CURL_GLOBAL_ALL;
 	if (curl_global_init(flags)) {
-		applog(LOG_ERR, "CURL initialization failed");
+		printline(out_screen, true, "CURL initialization failed");
+		//applog(LOG_ERR, "CURL initialization failed");
 		return 1;
 	}
 
@@ -1533,10 +1901,12 @@ int main(int argc, char *argv[])
 		if (i > 0) exit(0);
 		i = setsid();
 		if (i < 0)
-			applog(LOG_ERR, "setsid() failed (errno = %d)", errno);
+			//applog(LOG_ERR, "setsid() failed (errno = %d)", errno);
+			printline(out_screen, true, "setsid() failed (errno = %d)", errno);
 		i = chdir("/");
 		if (i < 0)
-			applog(LOG_ERR, "chdir() failed (errno = %d)", errno);
+			//applog(LOG_ERR, "chdir() failed (errno = %d)", errno);
+			printline(out_screen, true, "chdir() failed (errno = %d)", errno);
 		signal(SIGHUP, signal_handler);
 		signal(SIGINT, signal_handler);
 		signal(SIGTERM, signal_handler);
@@ -1545,7 +1915,9 @@ int main(int argc, char *argv[])
 
 	if (num_processors == 0)
 	{
-		applog(LOG_ERR, "No CUDA devices found! terminating.");
+		printline(out_screen, true, "No CUDA devices found! terminating.");
+		//applog(LOG_ERR, "No CUDA devices found! terminating.");
+		destroywins();
 		exit(1);
 	}
 	if (!opt_n_threads)
@@ -1578,7 +1950,8 @@ int main(int argc, char *argv[])
 
 	/* start work I/O thread */
 	if (pthread_create(&thr->pth, NULL, workio_thread, thr)) {
-		applog(LOG_ERR, "workio thread create failed");
+		//applog(LOG_ERR, "workio thread create failed");
+		printline(out_screen, true, "workio thread create failed");
 		return 1;
 	}
 
@@ -1593,7 +1966,8 @@ int main(int argc, char *argv[])
 
 		/* start longpoll thread */
 		if (unlikely(pthread_create(&thr->pth, NULL, longpoll_thread, thr))) {
-			applog(LOG_ERR, "longpoll thread create failed");
+			//applog(LOG_ERR, "longpoll thread create failed");
+			printline(out_screen, true, "longpoll thread create failed");
 			return 1;
 		}
 	}
@@ -1608,7 +1982,8 @@ int main(int argc, char *argv[])
 
 		/* start stratum thread */
 		if (unlikely(pthread_create(&thr->pth, NULL, stratum_thread, thr))) {
-			applog(LOG_ERR, "stratum thread create failed");
+			//applog(LOG_ERR, "stratum thread create failed");
+			printline(out_screen, true, "stratum thread create failed");
 			return 1;
 		}
 
@@ -1626,15 +2001,17 @@ int main(int argc, char *argv[])
 			return 1;
 
 		if (unlikely(pthread_create(&thr->pth, NULL, miner_thread, thr))) {
-			applog(LOG_ERR, "thread %d create failed", i);
+			//applog(LOG_ERR, "thread %d create failed", i);
+			printline(out_screen, true, "thread %d create failed", i);
 			return 1;
 		}
 	}
 
-	applog(LOG_INFO, "%d miner threads started, "
+	printline(out_screen, true, "%d miner threads started, using '%s' algorithm.", opt_n_threads, algo_names[opt_algo]);
+	/*applog(LOG_INFO, "%d miner threads started, "
 		"using '%s' algorithm.",
 		opt_n_threads,
-		algo_names[opt_algo]);
+		algo_names[opt_algo]);*/
 
 #ifdef WIN32
 	timeBeginPeriod(1); // enable high timer precision (similar to Google Chrome Trick)
@@ -1647,7 +2024,9 @@ int main(int argc, char *argv[])
 	timeEndPeriod(1); // be nice and forego high timer precision
 #endif
 
-	applog(LOG_INFO, "workio thread dead, exiting.");
+	//applog(LOG_INFO, "workio thread dead, exiting.");
+	printline(out_screen, true, "workio thread dead, exiting.");
 
+	destroywins();
 	return 0;
 }

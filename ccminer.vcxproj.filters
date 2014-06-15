@@ -144,6 +144,9 @@
     <ClCompile Include="myriadgroestl.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="hw_nvidia.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="compat.h">
