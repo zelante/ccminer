@@ -49,7 +49,7 @@
 #pragma comment(lib, "winmm.lib")
 #endif
 
-#define PROGRAM_NAME		"minerd"
+#define PROGRAM_NAME		"ccminer"
 #define PROGRAM_VERSION "1.2"
 #define LP_SCANTIME		60
 #define HEAVYCOIN_BLKHDR_SZ		84
@@ -67,7 +67,7 @@ int cuda_finddevice(char *name);
 }
 #endif
 
-WINDOW *info_screen, *out_screen;
+WINDOW *info_screen, *out_screen, *menu_screen;
 
 #ifdef __linux /* Linux specific policy and affinity management */
 #include <sched.h>
@@ -207,6 +207,7 @@ static double *thr_hashrates;
 struct upload_buffer { const void *buf; size_t len; };
 struct MemoryStruct { char *memory; size_t size; };
 
+int menukey;
 
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
@@ -241,8 +242,9 @@ void SetWindow(int Width, int Height)
 void updatescr()
 {
 	//wclear(info_screen);
+	wrefresh(menu_screen);
 	wrefresh(out_screen);
-	wrefresh(info_screen);	
+	wrefresh(info_screen);
 }
 
 int printline(WINDOW *win, bool newline, const char *fmt, ...) {
@@ -333,19 +335,19 @@ int gpuinfo(int id, double dif, double balance) {
 	mvwprintw(info_screen, 0, 1, "ccMiner %s for nVidia GPUs by Christian Buchner and Christian H.", PROGRAM_VERSION);
 	for (int i=0; i<opt_n_threads; ++i)	
 			{	
-				thermal_cur = hw_nvidia_gettemperature(i);
-				if (thermal_max[i] < thermal_cur) 
-					thermal_max[i] = thermal_cur;
+				thermal_cur = hw_nvidia_gettemperature(device_map[i]);
+				if (thermal_max[device_map[i]] < thermal_cur) 
+					thermal_max[device_map[i]] = thermal_cur;
 				ret=mvwprintw(info_screen, i+2, 0, "GPU #%d: %s %.0fkhash/s %uC/%uC %u%% %uMHz %uMHz %uMb          ", 
 					device_map[i], 
 					device_name[i],
 					thr_hashrates[i] * 1e-3,
 					thermal_cur,
-					thermal_max[i],
-					hw_nvidia_DynamicPstateInfoEx(i),
-					hw_nvidia_clock(i),
-					hw_nvidia_clockMemory(i),
-					hw_nvidia_memory(i));
+					thermal_max[device_map[i]],
+					hw_nvidia_DynamicPstateInfoEx(device_map[i]),
+					hw_nvidia_clock(device_map[i]),
+					hw_nvidia_clockMemory(device_map[i]),
+					hw_nvidia_memory(device_map[i]));
 			}
 	if (rpc_url)
 		mvwprintw(info_screen, parent_y/2-2, 0, "%s", rpc_url);
@@ -1229,7 +1231,7 @@ static void *miner_thread(void *userdata)
 				hashes_done / (diff.tv_sec + 1e-6 * diff.tv_usec);
 			pthread_mutex_unlock(&stats_lock);
 		}
-
+		
 		if (thr_hashrates[thr_id] > 1e8){
 			printline(out_screen, true, "abnormal hashes %f, exiting with code 211!", thr_hashrates[thr_id]);
 			//applog(LOG_ERR, "abnormal hashes %f, exiting with code 211!", thr_hashrates[thr_id]);
@@ -1254,6 +1256,23 @@ static void *miner_thread(void *userdata)
 		}*/
 
 		gpuinfo(thr_id,dif,balance);
+
+		menukey = wgetch(info_screen);
+
+		switch(menukey)
+		{
+			case KEY_F(10):
+				//destroywins();
+				//applog(LOG_INFO, "Normal exit by user request...");
+				delwin(info_screen);
+				delwin(out_screen);
+				endwin();
+				printf("Normal exit by user request...\n");
+				exit(0);
+				break;
+			default:
+				break;
+		}
 
 		if (!opt_quiet) {
 			sprintf(s, thr_hashrates[thr_id] >= 1e6 ? "%.0f" : "%.2f",
@@ -1498,15 +1517,33 @@ static void show_version_and_exit(void)
 	exit(0);
 }
 
+static void pdcurs_loop()
+{
+	initscr();
+	refresh();
+	idlok(stdscr, true);
+	scrollok(stdscr, true);
+	endwin();
+	printf("     *** ccMiner for nVidia GPUs by Christian Buchner and Christian H. ***\n");
+	printf("\t             This is version "PROGRAM_VERSION" (beta)\n");
+	printf("\t  based on pooler-cpuminer 2.3.2 (c) 2010 Jeff Garzik, 2012 pooler\n");
+	printf("\t  based on pooler-cpuminer extension for HVC from\n\t       https://github.com/heavycoin/cpuminer-heavycoin\n");
+	printf("\t\t\tand\n\t       http://hvc.1gh.com/\n");
+	printf("\tCuda additions Copyright 2014 Christian Buchner, Christian H.\n");
+	printf("\t  LTC donation address: LKS1WDKGED647msBQfLBHV3Ls8sveGncnm\n");
+	printf("\t  BTC donation address: 16hJF5mceSojnTD3ZTUDqdRhDyPJzoRakM\n");
+	printf("\t  YAC donation address: Y87sptDEcpLkLeAuex6qZioDbvy1qXZEj4\n\n");
+}
+
 static void show_usage_and_exit(int status)
 {
+	//destroywins();
+	pdcurs_loop();
 	if (status)
-		printline(out_screen, false, "Try `" PROGRAM_NAME " --help' for more information.\n");
-		//fprintf(stderr, "Try `" PROGRAM_NAME " --help' for more information.\n");
+		//printline(out_screen, false, "Try `" PROGRAM_NAME " --help' for more information.\n");
+		fprintf(stderr, "Try `" PROGRAM_NAME " --help' for more information.\n");
 	else
-		printline(out_screen, false, "%s", usage);
-		//printf(usage);
-	destroywins();
+		printf(usage);
 	exit(status);
 }
 
@@ -1541,9 +1578,9 @@ static void parse_arg (int key, char *arg)
 		opt_config = json_load_file(arg, &err);
 #endif
 		if (!json_is_object(opt_config)) {
-			printline(out_screen, true, "JSON decode of %s failed", arg);
+			pdcurs_loop();
 			//applog(LOG_ERR, "JSON decode of %s failed", arg);
-			destroywins();
+			printf("JSON decode of %s failed", arg);
 			exit(1);
 		}
 		break;
@@ -1698,9 +1735,9 @@ static void parse_arg (int key, char *arg)
 					if (atoi(pch) < num_processors)
 						device_map[opt_n_threads++] = atoi(pch);
 					else {
-						printline(out_screen, true, "Non-existant CUDA device #%d specified in -d option", atoi(pch));
+						pdcurs_loop();
 						//applog(LOG_ERR, "Non-existant CUDA device #%d specified in -d option", atoi(pch));
-						destroywins();
+						printf("Non-existant CUDA device #%d specified in -d option", atoi(pch));
 						exit(1);
 					}
 				} else {
@@ -1708,9 +1745,10 @@ static void parse_arg (int key, char *arg)
 					if (device >= 0 && device < num_processors)
 						device_map[opt_n_threads++] = device;
 					else {
-						printline(out_screen, true, "Non-existant CUDA device '%s' specified in -d option", pch);
+						pdcurs_loop();
 						//applog(LOG_ERR, "Non-existant CUDA device '%s' specified in -d option", pch);
-						destroywins();
+						printf("Non-existant CUDA device '%s' specified in -d option", pch);
+						//destroywins();
 						exit(1);
 					}
 				}
@@ -1789,18 +1827,18 @@ static void parse_cmdline(int argc, char *argv[])
 		parse_arg(key, optarg);
 	}
 	if (optind < argc) {
-		printline(out_screen, false, "%s: unsupported non-option argument '%s'\n",
-			argv[0], argv[optind]);
-		//fprintf(stderr, "%s: unsupported non-option argument '%s'\n",
+		//printline(out_screen, false, "%s: unsupported non-option argument '%s'\n",
 		//	argv[0], argv[optind]);
+		fprintf(stderr, "%s: unsupported non-option argument '%s'\n",
+			argv[0], argv[optind]);
 		show_usage_and_exit(1);
 	}
 
 	if (opt_algo == ALGO_HEAVY && opt_vote == 9999) {
-		printline(out_screen, false, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
-			argv[0]);
-		//fprintf(stderr, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
+		//printline(out_screen, false, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
 		//	argv[0]);
+		fprintf(stderr, "%s: Heavycoin hash requires block reward vote parameter (see --vote)\n",
+			argv[0]);
 		show_usage_and_exit(1);
 	}
 
@@ -1835,39 +1873,13 @@ int main(int argc, char *argv[])
 	long flags;
 	int i;
 
-	SetWindow(85,30);
-	initscr();
-	
-	getmaxyx(stdscr, parent_y, parent_x);
-	// set up initial windows
-	info_screen = newwin(parent_y / 2, parent_x, 0, 0);
-	out_screen = newwin(parent_y /2, parent_x, parent_y / 2 , 0);
-	scrollok(out_screen, TRUE);
-	scrollok(info_screen, TRUE);
-
 #ifdef WIN32
 	SYSTEM_INFO sysinfo;
 #endif
-	start_color();
-	init_pair(1, COLOR_GREEN, COLOR_BLACK); 
-	init_pair(2, COLOR_WHITE, COLOR_BLACK);
+	/*initscr();
+	scrollok(stdscr, true);
+	idlok(stdscr, true);*/
 
-
-	wcolor_set(out_screen, 1, NULL);
-	//updatescr();
-
-	//printf
-	vwprintw(out_screen, "     *** ccMiner for nVidia GPUs by Christian Buchner and Christian H. ***\n", NULL);
-	vwprintw(out_screen, "\t             This is version "PROGRAM_VERSION" (beta)\n", NULL);
-	vwprintw(out_screen, "\t  based on pooler-cpuminer 2.3.2 (c) 2010 Jeff Garzik, 2012 pooler\n", NULL);
-	vwprintw(out_screen, "\t  based on pooler-cpuminer extension for HVC from\n\t       https://github.com/heavycoin/cpuminer-heavycoin\n", NULL);
-	vwprintw(out_screen, "\t\t\tand\n\t       http://hvc.1gh.com/\n", NULL);
-	vwprintw(out_screen, "\tCuda additions Copyright 2014 Christian Buchner, Christian H.\n", NULL);
-	vwprintw(out_screen, "\t  LTC donation address: LKS1WDKGED647msBQfLBHV3Ls8sveGncnm\n", NULL);
-	vwprintw(out_screen, "\t  BTC donation address: 16hJF5mceSojnTD3ZTUDqdRhDyPJzoRakM\n", NULL);
-	vwprintw(out_screen, "\t  YAC donation address: Y87sptDEcpLkLeAuex6qZioDbvy1qXZEj4\n", NULL);
-	updatescr();
-	wcolor_set(out_screen, 2, NULL);
 	rpc_user = strdup("");
 	rpc_pass = strdup("");
 
@@ -1884,11 +1896,10 @@ int main(int argc, char *argv[])
 	cuda_devicenames();
 	nw_nvidia_init();
 //	gpuinfo();
-	wborder(info_screen,' ', ' ', '_', '_', '_', '_', '_', '_');
 
 	if (!opt_benchmark && !rpc_url) {
-		printline(out_screen, false, "%s: no URL supplied\n", argv[0]);
-		//fprintf(stderr, "%s: no URL supplied\n", argv[0]);
+		//printline(out_screen, false, "%s: no URL supplied\n", argv[0]);
+		fprintf(stderr, "%s: no URL supplied\n", argv[0]);
 		show_usage_and_exit(1);
 	}
 
@@ -1908,8 +1919,8 @@ int main(int argc, char *argv[])
 	      ? (CURL_GLOBAL_ALL & ~CURL_GLOBAL_SSL)
 	      : CURL_GLOBAL_ALL;
 	if (curl_global_init(flags)) {
-		printline(out_screen, true, "CURL initialization failed");
-		//applog(LOG_ERR, "CURL initialization failed");
+		//printline(out_screen, true, "CURL initialization failed");
+		applog(LOG_ERR, "CURL initialization failed");
 		return 1;
 	}
 
@@ -1920,12 +1931,12 @@ int main(int argc, char *argv[])
 		if (i > 0) exit(0);
 		i = setsid();
 		if (i < 0)
-			//applog(LOG_ERR, "setsid() failed (errno = %d)", errno);
-			printline(out_screen, true, "setsid() failed (errno = %d)", errno);
+			applog(LOG_ERR, "setsid() failed (errno = %d)", errno);
+			//printline(out_screen, true, "setsid() failed (errno = %d)", errno);
 		i = chdir("/");
 		if (i < 0)
-			//applog(LOG_ERR, "chdir() failed (errno = %d)", errno);
-			printline(out_screen, true, "chdir() failed (errno = %d)", errno);
+			applog(LOG_ERR, "chdir() failed (errno = %d)", errno);
+			//printline(out_screen, true, "chdir() failed (errno = %d)", errno);
 		signal(SIGHUP, signal_handler);
 		signal(SIGINT, signal_handler);
 		signal(SIGTERM, signal_handler);
@@ -1934,9 +1945,9 @@ int main(int argc, char *argv[])
 
 	if (num_processors == 0)
 	{
-		printline(out_screen, true, "No CUDA devices found! terminating.");
-		//applog(LOG_ERR, "No CUDA devices found! terminating.");
-		destroywins();
+		//printline(out_screen, true, "No CUDA devices found! terminating.");
+		applog(LOG_ERR, "No CUDA devices found! terminating.");
+		//destroywins();
 		exit(1);
 	}
 	if (!opt_n_threads)
@@ -1946,6 +1957,47 @@ int main(int argc, char *argv[])
 	if (use_syslog)
 		openlog("cpuminer", LOG_PID, LOG_USER);
 #endif
+
+	SetWindow(85,30);
+	initscr();
+	noecho();
+	raw();
+	cbreak();
+	
+	getmaxyx(stdscr, parent_y, parent_x);
+	// set up initial windows
+	info_screen = newwin(parent_y / 2, parent_x, 0, 0);
+	out_screen = newwin(parent_y /2 - 1, parent_x, parent_y / 2 , 0);
+	menu_screen = newwin(1, parent_x, parent_y - 1, 0);
+	wborder(info_screen,' ', ' ', '_', '_', '_', '_', '_', '_');
+	scrollok(out_screen, TRUE);
+	scrollok(info_screen, TRUE);
+	keypad(info_screen, TRUE);
+	nodelay(info_screen,TRUE);
+
+	start_color();
+	init_pair(1, COLOR_GREEN, COLOR_BLACK); 
+	init_pair(2, COLOR_WHITE, COLOR_BLACK);
+	init_pair(3, COLOR_CYAN, COLOR_BLACK);
+
+	wcolor_set(out_screen, 1, NULL);
+	wcolor_set(menu_screen, 3, NULL);
+	vwprintw(menu_screen," F10 Exit ", NULL);
+
+	//updatescr();
+
+	//printf
+	vwprintw(out_screen, "     *** ccMiner for nVidia GPUs by Christian Buchner and Christian H. ***\n", NULL);
+	vwprintw(out_screen, "\t             This is version "PROGRAM_VERSION" (beta)\n", NULL);
+	vwprintw(out_screen, "\t  based on pooler-cpuminer 2.3.2 (c) 2010 Jeff Garzik, 2012 pooler\n", NULL);
+	vwprintw(out_screen, "\t  based on pooler-cpuminer extension for HVC from\n\t       https://github.com/heavycoin/cpuminer-heavycoin\n", NULL);
+	vwprintw(out_screen, "\t\t\tand\n\t       http://hvc.1gh.com/\n", NULL);
+	vwprintw(out_screen, "\tCuda additions Copyright 2014 Christian Buchner, Christian H.\n", NULL);
+	vwprintw(out_screen, "\t  LTC donation address: LKS1WDKGED647msBQfLBHV3Ls8sveGncnm\n", NULL);
+	vwprintw(out_screen, "\t  BTC donation address: 16hJF5mceSojnTD3ZTUDqdRhDyPJzoRakM\n", NULL);
+	vwprintw(out_screen, "\t  YAC donation address: Y87sptDEcpLkLeAuex6qZioDbvy1qXZEj4\n", NULL);
+	updatescr();
+	wcolor_set(out_screen, 2, NULL);
 
 	work_restart = (struct work_restart *)calloc(opt_n_threads, sizeof(*work_restart));
 	if (!work_restart)
