@@ -182,6 +182,7 @@ bool opt_trust_pool = false;
 uint16_t opt_vote = 9999;
 static int num_processors;
 int device_map[8] = {0,1,2,3,4,5,6,7}; // CB
+unsigned int thermal_max[8] = {0};
 char *device_name[8]; // CB
 static char *rpc_url;
 static char *rpc_userpass;
@@ -326,15 +327,21 @@ int nvapi_init(){
 int gpuinfo(int id, double dif, double balance) {
 	int ret;
 	char *s;
+	unsigned int thermal_cur = 0;
+
 	pthread_mutex_lock(&applog_lock);
 	mvwprintw(info_screen, 0, 1, "ccMiner %s for nVidia GPUs by Christian Buchner and Christian H.", PROGRAM_VERSION);
 	for (int i=0; i<opt_n_threads; ++i)	
 			{	
-				ret=mvwprintw(info_screen, i+2, 0, "GPU #%d: %s %.0fkhash/s %uC %u%% %uMHz %uMHz %uMb", 
+				thermal_cur = hw_nvidia_gettemperature(i);
+				if (thermal_max[i] < thermal_cur) 
+					thermal_max[i] = thermal_cur;
+				ret=mvwprintw(info_screen, i+2, 0, "GPU #%d: %s %.0fkhash/s %uC/%uC %u%% %uMHz %uMHz %uMb          ", 
 					device_map[i], 
 					device_name[i],
 					thr_hashrates[i] * 1e-3,
-					hw_nvidia_gettemperature(i),
+					thermal_cur,
+					thermal_max[i],
 					hw_nvidia_DynamicPstateInfoEx(i),
 					hw_nvidia_clock(i),
 					hw_nvidia_clockMemory(i),
