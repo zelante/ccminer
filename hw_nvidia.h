@@ -16,3 +16,5 @@ unsigned int hw_nvidia_memory (DWORD dwGPUIndex);
 unsigned int hw_nvidia_clock (DWORD dwGPUIndex);
 unsigned int hw_nvidia_clockMemory (DWORD dwGPUIndex);
 unsigned int hw_nvidia_voltage (DWORD dwGPUIndex);
+unsigned int get_bus_id(DWORD dwGPUindex);
+int get_bus_ids();

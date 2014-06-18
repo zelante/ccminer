@@ -51,6 +51,7 @@
 
 #define PROGRAM_NAME		"ccminer"
 #define PROGRAM_VERSION "1.2"
+#define	PROGRAM_VERSION_SPLIT_SCREEN "1.2.3"
 #define LP_SCANTIME		60
 #define HEAVYCOIN_BLKHDR_SZ		84
 #define MNR_BLKHDR_SZ 80
@@ -61,6 +62,7 @@ extern "C"
 {
 #endif
 int cuda_num_devices();
+void cuda_bus_ids();
 void cuda_devicenames();
 int cuda_finddevice(char *name);
 #ifdef __cplusplus
@@ -181,7 +183,10 @@ static double opt_difficulty = 1; // CH
 bool opt_trust_pool = false;
 uint16_t opt_vote = 9999;
 static int num_processors;
-int device_map[8] = {0,1,2,3,4,5,6,7}; // CB
+int device_map[8] =  {0,1,2,3,4,5,6,7}; // CB {9,9,9,9,9,9,9,9};
+int invert[8] = {0};
+int bus_ids[8] = {0};
+int device_map_invert[8] = {0,1,2,3,4,5,6,7};
 unsigned int thermal_max[8] = {0};
 char *device_name[8]; // CB
 static char *rpc_url;
@@ -207,7 +212,7 @@ static double *thr_hashrates;
 struct upload_buffer { const void *buf; size_t len; };
 struct MemoryStruct { char *memory; size_t size; };
 
-int menukey;
+int menukey, cx, dx;
 
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
@@ -332,23 +337,48 @@ int gpuinfo(int id, double dif, double balance) {
 	unsigned int thermal_cur = 0;
 
 	pthread_mutex_lock(&applog_lock);
-	mvwprintw(info_screen, 0, 1, "ccMiner %s for nVidia GPUs by Christian Buchner and Christian H.", PROGRAM_VERSION);
-	for (int i=0; i<opt_n_threads; ++i)	
+	mvwprintw(info_screen, 0, 1, "Split Screen ccMiner %s by zelante [ core: ccMiner %s ]", PROGRAM_VERSION_SPLIT_SCREEN, PROGRAM_VERSION);
+	//mvwprintw(info_screen, parent_y/2 - 1, 1, "ccMiner %s for nVidia GPUs by Christian Buchner and Christian H.", PROGRAM_VERSION);
+	/*for (int i=0; i<opt_n_threads; i++)	
 			{	
-				thermal_cur = hw_nvidia_gettemperature(device_map[i]);
-				if (thermal_max[device_map[i]] < thermal_cur) 
-					thermal_max[device_map[i]] = thermal_cur;
-				ret=mvwprintw(info_screen, i+2, 0, "GPU #%d: %s %.0fkhash/s %uC/%uC %u%% %uMHz %uMHz %uMb          ", 
-					device_map[i], 
-					device_name[i],
-					thr_hashrates[i] * 1e-3,
+				if (i+1 == get_bus_id(id))
+				{
+					thermal_cur = hw_nvidia_gettemperature(invert[i]);
+					if (thermal_max[invert[i]] < thermal_cur) 
+						thermal_max[invert[i]] = thermal_cur;
+					ret=mvwprintw(info_screen, i+2, 0, "GPU #%d: %s %.0fkhash/s %uC/%uC %u%% %uMHz %uMHz %uMb          ", 
+						device_map[id], 
+						device_name[id],
+						thr_hashrates[id] * 1e-3,
+						thermal_cur,
+						thermal_max[invert[i]],
+						hw_nvidia_DynamicPstateInfoEx(invert[i]),
+						hw_nvidia_clock(invert[i]),
+						hw_nvidia_clockMemory(invert[i]),
+						hw_nvidia_memory(invert[i]));
+				}
+			}*/
+	
+				thermal_cur = hw_nvidia_gettemperature(invert[id]);
+				if (thermal_max[invert[id]] < thermal_cur) 
+					thermal_max[invert[id]] = thermal_cur;
+				ret=mvwprintw(info_screen, id+2, 0, "GPU #%d[%d]: %s %.0fkhash/s %uC/%uC %u%% %uMHz %uMHz %uMb          ", 
+					device_map[id], 
+					invert[id]+1,
+					device_name[id],
+					thr_hashrates[id] * 1e-3,
 					thermal_cur,
-					thermal_max[device_map[i]],
-					hw_nvidia_DynamicPstateInfoEx(device_map[i]),
-					hw_nvidia_clock(device_map[i]),
-					hw_nvidia_clockMemory(device_map[i]),
-					hw_nvidia_memory(device_map[i]));
-			}
+					thermal_max[invert[id]],
+					hw_nvidia_DynamicPstateInfoEx(invert[id]),
+					hw_nvidia_clock(invert[id]),
+					hw_nvidia_clockMemory(invert[id]),
+					hw_nvidia_memory(invert[id]));
+
+	/*mvwprintw(info_screen, 7, 0, "buses: %d %d %d invert(cuda bus id): %d %d %d", bus_ids[0],bus_ids[1],bus_ids[2],invert[0],invert[1],invert[2]);
+	mvwprintw(info_screen, 9, 0, "hw_temp = %d,%d,%d device_map = [%d,%d,%d,%d,%d,%d,%d,%d] device_map_invert[%d,%d,%d,%d,%d,%d,%d,%d]",
+		hw_nvidia_gettemperature(0),hw_nvidia_gettemperature(1),hw_nvidia_gettemperature(2),
+		device_map[0],device_map[1],device_map[2],device_map[3],device_map[4],device_map[5],device_map[6],device_map[7],
+		device_map_invert[0],device_map_invert[1],device_map_invert[2],device_map_invert[3],device_map_invert[4],device_map_invert[5],device_map_invert[6],device_map_invert[7]);*/
 	if (rpc_url)
 		mvwprintw(info_screen, parent_y/2-2, 0, "%s", rpc_url);
 	/*else if (rpc_url && !have_stratum) 
@@ -1547,6 +1577,11 @@ static void show_usage_and_exit(int status)
 	exit(status);
 }
 
+static int compare (const void * a, const void * b)
+{
+  return ( *(int*)a - *(int*)b );
+}
+
 static void parse_arg (int key, char *arg)
 {
 	char *p;
@@ -1752,6 +1787,8 @@ static void parse_arg (int key, char *arg)
 						exit(1);
 					}
 				}
+				//qsort (device_map, 8, sizeof(int), compare);
+				//device_map = device_map_invert;
 				pch = strtok (NULL, ",");
 			}
 		}
@@ -1867,11 +1904,38 @@ static void signal_handler(int sig)
 }
 #endif
 
+void bubbleSort(int *array, int *array2, char *array3, int length)//Bubble sort function 
+{
+	int i,j;
+	for(i=0;i<10;i++)
+	{
+		for(j=0;j<i;j++)
+		{
+			if(array[i]>array[j])
+			{
+				int temp=array[i]; //swap 
+				array[i]=array[j];
+				array[j]=temp;
+				temp=array2[i]; //swap 
+				array2[i]=array2[j];
+				array2[j]=temp;
+				char str=array3[i]; //swap 
+				array3[i]=array3[j];
+				array3[j]=str;
+			}
+
+		}
+
+	}
+
+}
+
 int main(int argc, char *argv[])
 {
 	struct thr_info *thr;
 	long flags;
 	int i;
+	char *gpuByPhysicalStr;
 
 #ifdef WIN32
 	SYSTEM_INFO sysinfo;
@@ -1895,7 +1959,13 @@ int main(int argc, char *argv[])
 
 	cuda_devicenames();
 	nw_nvidia_init();
+
+	get_bus_ids();
+
+
 //	gpuinfo();
+
+	//for (int i = 0; i < num_processors-1; i++)
 
 	if (!opt_benchmark && !rpc_url) {
 		//printline(out_screen, false, "%s: no URL supplied\n", argv[0]);
@@ -2062,6 +2132,8 @@ int main(int argc, char *argv[])
 			tq_push(thr_info[stratum_thr_id].q, strdup(rpc_url));
 	}
 
+	//mvwprintw(info_screen, 8, 0, "GPU phys -d ");
+
 	/* start mining threads */
 	for (i = 0; i < opt_n_threads; i++) {
 		thr = &thr_info[i];
@@ -2076,9 +2148,19 @@ int main(int argc, char *argv[])
 			printline(out_screen, true, "thread %d create failed", i);
 			return 1;
 		}
+
+		/*wprintw(info_screen, "%u", invert[i]);
+
+		if (i < opt_n_threads - 1)
+			wprintw(info_screen, ",");*/
+		
 	}
 
+	
+	//mvwprintw(info_screen, 8, i+10, "%s", gpuByPhysicalStr);
+
 	printline(out_screen, true, "%d miner threads started, using '%s' algorithm.", opt_n_threads, algo_names[opt_algo]);
+
 	/*applog(LOG_INFO, "%d miner threads started, "
 		"using '%s' algorithm.",
 		opt_n_threads,

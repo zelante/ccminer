@@ -77,6 +77,7 @@ int nw_nvidia_init()
 
 DWORD hw_nvidia_gettemperature( DWORD dwGPUIndex )
 {
+	DWORD *busid;
 	// Only initialize nvapi once
 	static bool s_nvapi_initialized = false;
 	// Array of physical GPU handle
@@ -88,16 +89,22 @@ DWORD hw_nvidia_gettemperature( DWORD dwGPUIndex )
 	// Ensure the index is correct
 	if( dwGPUIndex > gpuCount )
 		return -1;
-	
-	// Retrive the temperature
-	ZeroMemory( &temperature, sizeof( NV_GPU_THERMAL_SETTINGS ) );
-	temperature.version = NV_GPU_THERMAL_SETTINGS_VER;
-	if( NvAPI_GPU_GetThermalSettings( nvGPUHandles[ dwGPUIndex ], NVAPI_THERMAL_TARGET_ALL, &temperature ) != NVAPI_OK )
-		return -1;
 
-	if( temperature.count == 0 )
-		return -1;
+	/*for (int i = 0; i < gpuCount; i++)
+	{
+		if (NvAPI_GPU_GetBusId(nvGPUHandles[dwGPUIndex], busid) == NVAPI_OK )
+			if (int(busid) - 1 == i)
+			{*/
+				// Retrive the temperature
+				ZeroMemory( &temperature, sizeof( NV_GPU_THERMAL_SETTINGS ) );
+				temperature.version = NV_GPU_THERMAL_SETTINGS_VER;
+				if( NvAPI_GPU_GetThermalSettings( nvGPUHandles[ dwGPUIndex ], NVAPI_THERMAL_TARGET_ALL, &temperature ) != NVAPI_OK )
+					return -1;
 
+				if( temperature.count == 0 )
+					return -1;
+			/*}
+	}*/
 	return temperature.sensor[0].currentTemp;
 }
 
@@ -143,6 +150,29 @@ unsigned int hw_nvidia_memory (DWORD dwGPUIndex)
 		return -1;
 	usedMemory = (pMemoryInfo.dedicatedVideoMemory-pMemoryInfo.curAvailableDedicatedVideoMemory)/1024;
 	return usedMemory;
+}
+
+extern int bus_ids[8];
+extern int device_map[8];
+int get_bus_ids()
+{
+	NvU32 busid;
+	for (int i=0; i < gpuCount; i++)
+	{
+		if ( NvAPI_GPU_GetBusId(nvGPUHandles[device_map[i]], &busid) != NVAPI_OK )
+			return -1;
+		bus_ids[i] = busid;
+	}
+	return 0;
+}
+
+
+unsigned int get_bus_id(DWORD dwGPUindex)
+{
+	NvU32 busid;
+	if ( NvAPI_GPU_GetBusId(nvGPUHandles[dwGPUindex], &busid) != NVAPI_OK )
+		return -1;
+	return busid;
 }
 
 unsigned int hw_nvidia_clock (DWORD dwGPUIndex)

@@ -167,6 +167,7 @@ extern "C" int cuda_num_devices()
 // Gerätenamen holen
 extern char *device_name[8];
 extern int device_map[8];
+extern int invert[8];
 
 extern "C" void cuda_devicenames()
 {
@@ -183,7 +184,7 @@ extern "C" void cuda_devicenames()
     {
         cudaDeviceProp props;
         cudaGetDeviceProperties(&props, device_map[i]);
-
+		invert[i] = props.pciBusID-1;
         device_name[i] = strdup(props.name);
     }
 }
@@ -220,7 +221,11 @@ extern "C" int cuda_finddevice(char *name)
         if (cudaGetDeviceProperties(&props, i) == cudaSuccess)
             if (substringsearch(props.name, name, match)) return i;
     }
-    return -1;
+    /*cudaDeviceProp props;
+    if (cudaGetDeviceProperties(&props, i) == cudaSuccess)
+	    if (substringsearch(props.name, name, match)) return i;*/
+
+	return -1;
 }
 
 // Zeitsynchronisations-Routine von cudaminer mit CPU sleep
