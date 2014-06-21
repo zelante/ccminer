@@ -2,7 +2,7 @@
 #include "nvapi.h" // I'll let you fix this one, I haven't included the files here, but they can be downloaded from the Nvidia website
 
 // Link with nvapi
-#pragma comment( lib, "nvapi.lib" )
+//#pragma comment( lib, "nvapi.lib" )
 
 //
 // **** Critical section helper ****
@@ -52,6 +52,23 @@ namespace
 
 static CriticalSection s_hw_nvidia_cs;
 
+#define NVAPI_MAX_USAGES_PER_GPU  34
+
+typedef int *(*NvAPI_QueryInterface_t)(unsigned int offset);
+/*typedef int (*NvAPI_Initialize_t)();
+typedef int (*_NvAPI_GPU_GetFullName_t)(int *hPhysicalGpu, char name[64]);
+typedef int (*NvAPI_EnumPhysicalGPUs_t)(int **handles, int *count);*/
+typedef int (*NvAPI_GPU_GetUsages_t)(int *handle, unsigned int *usages);
+//typedef int (*NvAPI_GPU_GetMemoryInfo_t) (int *hPhysicalGpu, NV_DISPLAY_DRIVER_MEMORY_INFO *PMemoryInfo);
+//typedef int (*NvAPI_GPU_GetMemoryInfo_t) (int *hPhysicalGpu, NV_DISPLAY_DRIVER_MEMORY_INFO *PMemoryInfo);
+//typedef int (*NvAPI_GPU_GetCoolerSettings_t) (NvPhysicalGpuHandle hPhysicalGpu, NvU32 coolerIndex, NV_GPU_GETCOOLER_SETTINGS *pCoolerInfo);
+typedef int (*NvAPI_GPU_GetCoolerSettings_t) (NvPhysicalGpuHandle hPhysicalGpu, NvU32 coolerIndex, NV_GPU_GETCOOLER_SETTINGS *pCoolerInfo);
+
+static NvAPI_QueryInterface_t NvAPI_QueryInterface = NULL;
+static NvAPI_GPU_GetUsages_t NvAPI_GPU_GetUsages = NULL;
+static NvAPI_GPU_GetCoolerSettings_t NvAPI_GPU_GetCoolerSettings = NULL;
+
+
 //
 // **** hw_nvidia_gettemperature ****
 //
@@ -63,6 +80,17 @@ NvU32 gpuCount = 0;
 
 int nw_nvidia_init()
 {
+	HMODULE hmod = LoadLibraryA("nvapi.dll");
+	if (hmod == NULL)
+		return -1;
+	
+	NvAPI_QueryInterface = (NvAPI_QueryInterface_t) GetProcAddress(hmod, "nvapi_QueryInterface");
+	NvAPI_GPU_GetUsages = (NvAPI_GPU_GetUsages_t) (*NvAPI_QueryInterface)(0x189A1FDF);
+	NvAPI_GPU_GetCoolerSettings = (NvAPI_GPU_GetCoolerSettings_t) (*NvAPI_QueryInterface)(0xDA141340);
+   
+	if (NvAPI_GPU_GetUsages == NULL || NvAPI_GPU_GetCoolerSettings == NULL)
+        return -1;
+
 	static bool s_nvapi_initialized = false;
 	CriticalSectionHolder csh( s_hw_nvidia_cs );
 	if( !s_nvapi_initialized )
@@ -73,7 +101,6 @@ int nw_nvidia_init()
 		return -1;
 	return 0;
 }
-
 
 DWORD hw_nvidia_gettemperature( DWORD dwGPUIndex )
 {
@@ -122,6 +149,21 @@ unsigned int hw_nvidia_DynamicPstateInfoEx( DWORD dwGPUIndex ) {
 	return m_DynamicPStateInfo.utilization[0].percentage;
 }
 
+
+unsigned int hw_nvidia_memory_util_prc( DWORD dwGPUIndex ) {
+	NV_GPU_DYNAMIC_PSTATES_INFO_EX m_DynamicPStateInfo;
+	ZeroMemory( &m_DynamicPStateInfo, sizeof( NV_GPU_DYNAMIC_PSTATES_INFO_EX ) );
+	m_DynamicPStateInfo.version = NV_GPU_DYNAMIC_PSTATES_INFO_EX_VER;
+
+	// Ensure the index is correct
+	if( dwGPUIndex > gpuCount )
+		return -1;
+
+	if (NvAPI_GPU_GetDynamicPstatesInfoEx( nvGPUHandles [dwGPUIndex], &m_DynamicPStateInfo) != NVAPI_OK)
+		return -1;
+	return m_DynamicPStateInfo.utilization[1].percentage;
+}
+
 unsigned int hw_nvidia_Pstate20 (DWORD dwGPUIndex) {
 	NV_GPU_PERF_PSTATES20_INFO m_PStateInfo;
 	ZeroMemory( &m_PStateInfo, sizeof(NV_GPU_PERF_PSTATES20_INFO));
@@ -146,10 +188,59 @@ unsigned int hw_nvidia_memory (DWORD dwGPUIndex)
 	// Ensure the index is correct
 	if( dwGPUIndex > gpuCount )
 		return -1;	
+
 	if (NvAPI_GPU_GetMemoryInfo( nvGPUHandles[dwGPUIndex], &pMemoryInfo) != NVAPI_OK)
 		return -1;
 	usedMemory = (pMemoryInfo.dedicatedVideoMemory-pMemoryInfo.curAvailableDedicatedVideoMemory)/1024;
 	return usedMemory;
+}
+
+unsigned int hw_nvidia_memory_prc (DWORD dwGPUIndex)
+{
+	NV_DISPLAY_DRIVER_MEMORY_INFO pMemoryInfo2;
+	ZeroMemory(&pMemoryInfo2, sizeof(NV_DISPLAY_DRIVER_MEMORY_INFO));
+	pMemoryInfo2.version = NV_DISPLAY_DRIVER_MEMORY_INFO_VER_2;
+	NvU32 usedMemory = 0, totalMemory = 0, availableMemory = 0, usedMemoryPrc = 0;
+
+	// Ensure the index is correct
+	if( dwGPUIndex > gpuCount )
+		return -1;	
+
+	if (NvAPI_GPU_GetMemoryInfo( nvGPUHandles[dwGPUIndex], &pMemoryInfo2) != NVAPI_OK)
+		return -1;
+	totalMemory = pMemoryInfo2.dedicatedVideoMemory / 1024;
+	availableMemory = pMemoryInfo2.curAvailableDedicatedVideoMemory / 1024;
+	usedMemory = totalMemory - availableMemory;
+	usedMemoryPrc = 100 * usedMemory / totalMemory;
+	return usedMemoryPrc;
+}
+
+unsigned int hw_nvidia_cooler (DWORD dwGPUIndex)
+{
+	//HMODULE hmod = LoadLibraryA("nvapi.dll");
+	NvU32 speed;
+	//NvAPI_GPU_GetCoolerSettings = (NvAPI_GPU_GetCoolerSettings_t) (*NvAPI_QueryInterface)(0xDA141340);
+	NV_GPU_GETCOOLER_SETTINGS cooler_settings;
+	if( dwGPUIndex > gpuCount )
+		return -1;
+	if (NvAPI_GPU_GetTachReading ( nvGPUHandles[dwGPUIndex], &speed) != NVAPI_OK)
+		return -1;
+	/*if (NvAPI_GPU_GetCoolerSettings ( nvGPUHandles[dwGPUIndex], 0, &cooler_settings) != NVAPI_OK)
+		return -1;*/
+	return speed;
+	//return cooler_settings.cooler[0].currentLevel;
+}
+
+unsigned int hw_nvidia_fan (DWORD dwGPUIndex)
+{
+	NV_GPU_GETCOOLER_SETTINGS PCoolerSettings;
+	ZeroMemory(&PCoolerSettings, sizeof(NV_GPU_GETCOOLER_SETTINGS));
+	PCoolerSettings.version = NV_GPU_GETCOOLER_SETTINGS_VER;
+	if( dwGPUIndex > gpuCount )
+		return -1;
+	if ((*NvAPI_GPU_GetCoolerSettings)(nvGPUHandles[dwGPUIndex], 0, &PCoolerSettings) != NVAPI_OK)
+		return -1;
+	return PCoolerSettings.cooler[0].currentLevel;
 }
 
 extern int bus_ids[8];

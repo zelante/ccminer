@@ -49,9 +49,9 @@
 #pragma comment(lib, "winmm.lib")
 #endif
 
-#define PROGRAM_NAME		"ccminer"
-#define PROGRAM_VERSION "1.2"
-#define	PROGRAM_VERSION_SPLIT_SCREEN "1.2.3"
+#define PROGRAM_NAME	"ccminer"
+#define PROGRAM_VERSION	"1.2"
+#define	PROGRAM_VERSION_SPLIT_SCREEN "1.2.4"
 #define LP_SCANTIME		60
 #define HEAVYCOIN_BLKHDR_SZ		84
 #define MNR_BLKHDR_SZ 80
@@ -167,6 +167,7 @@ bool want_longpoll = true;
 bool have_longpoll = false;
 bool want_stratum = true;
 bool have_stratum = false;
+bool isWorkerShow = false;
 static bool submit_old = false;
 bool use_syslog = false;
 static bool opt_background = false;
@@ -189,6 +190,7 @@ int bus_ids[8] = {0};
 int device_map_invert[8] = {0,1,2,3,4,5,6,7};
 unsigned int thermal_max[8] = {0};
 char *device_name[8]; // CB
+char *menu_key[10] = {"","","","","","","","","F9 ShowUser","F10 Exit"};	 
 static char *rpc_url;
 static char *rpc_userpass;
 static char *rpc_user, *rpc_pass;
@@ -331,6 +333,16 @@ int nvapi_init(){
     return 0;
 }
 
+void show_menu()
+{
+	if (isWorkerShow)
+		mvwprintw(info_screen, parent_y/2-2, 0, "%s %-34s", rpc_url, rpc_user);
+	else
+		mvwprintw(info_screen, parent_y/2-2, 0, "%-90s", rpc_url);
+	mvwprintw(menu_screen, 0, 0, "%s %s", menu_key[8], menu_key[9]);
+	updatescr();
+}
+
 int gpuinfo(int id, double dif, double balance) {
 	int ret;
 	char *s;
@@ -338,51 +350,25 @@ int gpuinfo(int id, double dif, double balance) {
 
 	pthread_mutex_lock(&applog_lock);
 	mvwprintw(info_screen, 0, 1, "Split Screen ccMiner %s by zelante [ core: ccMiner %s ]", PROGRAM_VERSION_SPLIT_SCREEN, PROGRAM_VERSION);
-	//mvwprintw(info_screen, parent_y/2 - 1, 1, "ccMiner %s for nVidia GPUs by Christian Buchner and Christian H.", PROGRAM_VERSION);
-	/*for (int i=0; i<opt_n_threads; i++)	
-			{	
-				if (i+1 == get_bus_id(id))
-				{
-					thermal_cur = hw_nvidia_gettemperature(invert[i]);
-					if (thermal_max[invert[i]] < thermal_cur) 
-						thermal_max[invert[i]] = thermal_cur;
-					ret=mvwprintw(info_screen, i+2, 0, "GPU #%d: %s %.0fkhash/s %uC/%uC %u%% %uMHz %uMHz %uMb          ", 
-						device_map[id], 
-						device_name[id],
-						thr_hashrates[id] * 1e-3,
-						thermal_cur,
-						thermal_max[invert[i]],
-						hw_nvidia_DynamicPstateInfoEx(invert[i]),
-						hw_nvidia_clock(invert[i]),
-						hw_nvidia_clockMemory(invert[i]),
-						hw_nvidia_memory(invert[i]));
-				}
-			}*/
-	
-				thermal_cur = hw_nvidia_gettemperature(invert[id]);
-				if (thermal_max[invert[id]] < thermal_cur) 
-					thermal_max[invert[id]] = thermal_cur;
-				ret=mvwprintw(info_screen, id+2, 0, "GPU #%d[%d]: %s %.0fkhash/s %uC/%uC %u%% %uMHz %uMHz %uMb          ", 
-					device_map[id], 
-					invert[id]+1,
-					device_name[id],
-					thr_hashrates[id] * 1e-3,
-					thermal_cur,
-					thermal_max[invert[id]],
-					hw_nvidia_DynamicPstateInfoEx(invert[id]),
-					hw_nvidia_clock(invert[id]),
-					hw_nvidia_clockMemory(invert[id]),
-					hw_nvidia_memory(invert[id]));
-
-	/*mvwprintw(info_screen, 7, 0, "buses: %d %d %d invert(cuda bus id): %d %d %d", bus_ids[0],bus_ids[1],bus_ids[2],invert[0],invert[1],invert[2]);
-	mvwprintw(info_screen, 9, 0, "hw_temp = %d,%d,%d device_map = [%d,%d,%d,%d,%d,%d,%d,%d] device_map_invert[%d,%d,%d,%d,%d,%d,%d,%d]",
-		hw_nvidia_gettemperature(0),hw_nvidia_gettemperature(1),hw_nvidia_gettemperature(2),
-		device_map[0],device_map[1],device_map[2],device_map[3],device_map[4],device_map[5],device_map[6],device_map[7],
-		device_map_invert[0],device_map_invert[1],device_map_invert[2],device_map_invert[3],device_map_invert[4],device_map_invert[5],device_map_invert[6],device_map_invert[7]);*/
-	if (rpc_url)
-		mvwprintw(info_screen, parent_y/2-2, 0, "%s", rpc_url);
-	/*else if (rpc_url && !have_stratum) 
-		mvwprintw(info_screen, parent_y/2-2, 0, "%s diff:%.4f balance:%.8f", rpc_url, dif, balance);*/
+	thermal_cur = hw_nvidia_gettemperature(invert[id]);
+	if (thermal_max[invert[id]] < thermal_cur) 
+		thermal_max[invert[id]] = thermal_cur;
+	ret=mvwprintw(info_screen, id+3, 0, "GPU #%1d[%1d]: %18s %6.0fkhash/s %2uC/%2uC %4u%RPM(%2u%%) %4uMHz %2u%% %4uMHz %2u%% %4uMB(%2u%%)", 
+		device_map[id], 
+		invert[id]+1,
+		device_name[id],
+		thr_hashrates[id] * 1e-3,
+		thermal_cur,
+		thermal_max[invert[id]],
+		hw_nvidia_cooler(invert[id]),
+		hw_nvidia_fan(invert[id]),
+		hw_nvidia_clock(invert[id]),
+		hw_nvidia_DynamicPstateInfoEx(invert[id]),
+		hw_nvidia_clockMemory(invert[id]),
+		hw_nvidia_memory_util_prc(invert[id]),
+		hw_nvidia_memory(invert[id]),
+		hw_nvidia_memory_prc(invert[id])
+		);
 	updatescr();
 	pthread_mutex_unlock(&applog_lock);
 	return ret;
@@ -1285,12 +1271,26 @@ static void *miner_thread(void *userdata)
 			//json_decref(value);
 		}*/
 
+		
 		gpuinfo(thr_id,dif,balance);
 
-		menukey = wgetch(info_screen);
+		menukey = wgetch(menu_screen);
 
 		switch(menukey)
 		{
+			case KEY_F(9):
+				if (isWorkerShow)
+				{
+					menu_key[8] = "F9 ShowUser";
+					isWorkerShow = false;
+				}
+				else
+				{
+					menu_key[8] = "F9 HideUser";
+					isWorkerShow = true;
+				}
+				show_menu();
+				break;
 			case KEY_F(10):
 				//destroywins();
 				//applog(LOG_INFO, "Normal exit by user request...");
@@ -1958,7 +1958,8 @@ int main(int argc, char *argv[])
 	parse_cmdline(argc, argv);
 
 	cuda_devicenames();
-	nw_nvidia_init();
+	if (nw_nvidia_init() != 0)
+		return 1;
 
 	get_bus_ids();
 
@@ -2028,12 +2029,13 @@ int main(int argc, char *argv[])
 		openlog("cpuminer", LOG_PID, LOG_USER);
 #endif
 
-	SetWindow(85,30);
+	SetWindow(100,30);
 	initscr();
 	noecho();
 	raw();
 	cbreak();
-	
+	curs_set(0);
+
 	getmaxyx(stdscr, parent_y, parent_x);
 	// set up initial windows
 	info_screen = newwin(parent_y / 2, parent_x, 0, 0);
@@ -2042,8 +2044,8 @@ int main(int argc, char *argv[])
 	wborder(info_screen,' ', ' ', '_', '_', '_', '_', '_', '_');
 	scrollok(out_screen, TRUE);
 	scrollok(info_screen, TRUE);
-	keypad(info_screen, TRUE);
-	nodelay(info_screen,TRUE);
+	keypad(menu_screen, TRUE);
+	nodelay(menu_screen,TRUE);
 
 	start_color();
 	init_pair(1, COLOR_GREEN, COLOR_BLACK); 
@@ -2052,7 +2054,6 @@ int main(int argc, char *argv[])
 
 	wcolor_set(out_screen, 1, NULL);
 	wcolor_set(menu_screen, 3, NULL);
-	vwprintw(menu_screen," F10 Exit ", NULL);
 
 	//updatescr();
 
@@ -2066,7 +2067,8 @@ int main(int argc, char *argv[])
 	vwprintw(out_screen, "\t  LTC donation address: LKS1WDKGED647msBQfLBHV3Ls8sveGncnm\n", NULL);
 	vwprintw(out_screen, "\t  BTC donation address: 16hJF5mceSojnTD3ZTUDqdRhDyPJzoRakM\n", NULL);
 	vwprintw(out_screen, "\t  YAC donation address: Y87sptDEcpLkLeAuex6qZioDbvy1qXZEj4\n", NULL);
-	updatescr();
+	//updatescr();
+	show_menu();
 	wcolor_set(out_screen, 2, NULL);
 
 	work_restart = (struct work_restart *)calloc(opt_n_threads, sizeof(*work_restart));
