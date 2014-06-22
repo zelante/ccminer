@@ -51,7 +51,7 @@
 
 #define PROGRAM_NAME	"ccminer"
 #define PROGRAM_VERSION	"1.2"
-#define	PROGRAM_VERSION_SPLIT_SCREEN "1.2.4"
+#define	PROGRAM_VERSION_SPLIT_SCREEN "1.2.5"
 #define LP_SCANTIME		60
 #define HEAVYCOIN_BLKHDR_SZ		84
 #define MNR_BLKHDR_SZ 80
@@ -190,7 +190,9 @@ int bus_ids[8] = {0};
 int device_map_invert[8] = {0,1,2,3,4,5,6,7};
 unsigned int thermal_max[8] = {0};
 char *device_name[8]; // CB
-char *menu_key[10] = {"","","","","","","","","F9 ShowUser","F10 Exit"};	 
+char *menu_key[10] = {"","","","","","","","","F9 ShowUser","F10 Exit"};	
+unsigned int *driver_version;
+char *datetime_start_mining;
 static char *rpc_url;
 static char *rpc_userpass;
 static char *rpc_user, *rpc_pass;
@@ -210,6 +212,8 @@ static pthread_mutex_t stats_lock;
 static unsigned long accepted_count = 0L;
 static unsigned long rejected_count = 0L;
 static double *thr_hashrates;
+static double thr_average_hashrates[8][20];
+static int thr_average_hashrates_counter[8];
 
 struct upload_buffer { const void *buf; size_t len; };
 struct MemoryStruct { char *memory; size_t size; };
@@ -293,6 +297,38 @@ int printline(WINDOW *win, bool newline, const char *fmt, ...) {
 	return retval;
 }
 
+char* getdatetime() {
+    va_list args;
+    int retval;
+
+	char *f;
+	int len;
+	time_t now;
+	struct tm tm, *tm_p;
+	
+	time(&now);
+
+	pthread_mutex_lock(&applog_lock);
+	tm_p = localtime(&now);
+	memcpy(&tm, tm_p, sizeof(tm));
+	pthread_mutex_unlock(&applog_lock);
+
+	len = (int)(42);
+	f = (char*)alloca(len);
+	//datetime_start_mining = (char*)alloca(len);
+		
+	sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d]",
+		tm.tm_year + 1900,
+		tm.tm_mon + 1,
+		tm.tm_mday,
+		tm.tm_hour,
+		tm.tm_min,
+		tm.tm_sec
+		);
+	//pthread_mutex_lock(&applog_lock);
+	return f;
+}
+
 static void destroywins(void) {
 	delwin(info_screen);
 	delwin(out_screen);
@@ -336,28 +372,48 @@ int nvapi_init(){
 void show_menu()
 {
 	if (isWorkerShow)
-		mvwprintw(info_screen, parent_y/2-2, 0, "%s %-34s", rpc_url, rpc_user);
+		mvwprintw(info_screen, parent_y/2-2, 0, "%21s %s %-34s", datetime_start_mining, rpc_url, rpc_user);
 	else
-		mvwprintw(info_screen, parent_y/2-2, 0, "%-90s", rpc_url);
+		mvwprintw(info_screen, parent_y/2-2, 0, "%21s %-76s", datetime_start_mining, rpc_url);
 	mvwprintw(menu_screen, 0, 0, "%s %s", menu_key[8], menu_key[9]);
 	updatescr();
+}
+
+void start_info()
+{
+	datetime_start_mining = strdup(getdatetime());
+	mvwprintw(info_screen, 2, 0, "NVIDIA driver %.2f", (float)(hw_nvidia_version()) / 100);
 }
 
 int gpuinfo(int id, double dif, double balance) {
 	int ret;
 	char *s;
 	unsigned int thermal_cur = 0;
-
+	double average_hashrate = 0;
 	pthread_mutex_lock(&applog_lock);
 	mvwprintw(info_screen, 0, 1, "Split Screen ccMiner %s by zelante [ core: ccMiner %s ]", PROGRAM_VERSION_SPLIT_SCREEN, PROGRAM_VERSION);
+
+	if (thr_average_hashrates_counter[id] < 20)
+		thr_average_hashrates_counter[id]++;
+	else
+		thr_average_hashrates_counter[id] = 0;
+	
+	thr_average_hashrates[id][ thr_average_hashrates_counter[id] ] = thr_hashrates[id];
+
+	for (int i=0; i<20; i++)
+		average_hashrate += thr_average_hashrates[id][i];
+
+	average_hashrate = average_hashrate / 20;
+
 	thermal_cur = hw_nvidia_gettemperature(invert[id]);
 	if (thermal_max[invert[id]] < thermal_cur) 
 		thermal_max[invert[id]] = thermal_cur;
-	ret=mvwprintw(info_screen, id+3, 0, "GPU #%1d[%1d]: %18s %6.0fkhash/s %2uC/%2uC %4u%RPM(%2u%%) %4uMHz %2u%% %4uMHz %2u%% %4uMB(%2u%%)", 
+	ret=mvwprintw(info_screen, id+4, 0, "GPU #%1d[%1d]: %18s %6.0f/%-6.0fkhash/s %2u/%2uC %4u%RPM(%2u%%) %4uMHz %2u%% %4uMHz %2u%% %4uMB(%2u%%)", 
 		device_map[id], 
 		invert[id]+1,
 		device_name[id],
 		thr_hashrates[id] * 1e-3,
+		average_hashrate * 1e-3,
 		thermal_cur,
 		thermal_max[invert[id]],
 		hw_nvidia_cooler(invert[id]),
@@ -2029,7 +2085,7 @@ int main(int argc, char *argv[])
 		openlog("cpuminer", LOG_PID, LOG_USER);
 #endif
 
-	SetWindow(100,30);
+	SetWindow(106,30);
 	initscr();
 	noecho();
 	raw();
@@ -2068,6 +2124,7 @@ int main(int argc, char *argv[])
 	vwprintw(out_screen, "\t  BTC donation address: 16hJF5mceSojnTD3ZTUDqdRhDyPJzoRakM\n", NULL);
 	vwprintw(out_screen, "\t  YAC donation address: Y87sptDEcpLkLeAuex6qZioDbvy1qXZEj4\n", NULL);
 	//updatescr();
+	start_info();
 	show_menu();
 	wcolor_set(out_screen, 2, NULL);
 

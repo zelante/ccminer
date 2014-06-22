@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include "hw_nvidia.h"
 #include "nvapi.h" // I'll let you fix this one, I haven't included the files here, but they can be downloaded from the Nvidia website
 
@@ -313,3 +315,12 @@ unsigned int hw_nvidia_voltage (DWORD dwGPUIndex)
 	return pPstatesInfo.pstates[1].baseVoltages[0].volt_uV;
 }
 
+
+unsigned int hw_nvidia_version ()
+{
+	NV_DISPLAY_DRIVER_VERSION version = {0}; 
+	version.version = NV_DISPLAY_DRIVER_VERSION_VER; 
+	if (NvAPI_GetDisplayDriverVersion (NVAPI_DEFAULT_HANDLE, & version) != NVAPI_OK) 
+		return -1;
+	return version.drvVersion;
+}

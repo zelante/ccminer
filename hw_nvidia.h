@@ -21,4 +21,5 @@ unsigned int hw_nvidia_voltage (DWORD dwGPUIndex);
 unsigned int hw_nvidia_cooler (DWORD dwGPUIndex);
 unsigned int hw_nvidia_fan (DWORD dwGPUIndex);
 unsigned int get_bus_id(DWORD dwGPUindex);
+unsigned int hw_nvidia_version();
 int get_bus_ids();
