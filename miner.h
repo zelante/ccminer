@@ -17,6 +17,7 @@ extern "C" {
 
 extern WINDOW *info_screen, *out_screen;
 extern int printline(WINDOW *win, bool newline, const char *fmt, ...);
+extern int sendmail(char* subject, char* error);
 
 #ifdef WIN32
 #define snprintf(...) _snprintf(__VA_ARGS__)

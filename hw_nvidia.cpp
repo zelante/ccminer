@@ -104,7 +104,7 @@ int nw_nvidia_init()
 	return 0;
 }
 
-DWORD hw_nvidia_gettemperature( DWORD dwGPUIndex )
+INT32 hw_nvidia_gettemperature( DWORD dwGPUIndex )
 {
 	DWORD *busid;
 	// Only initialize nvapi once
@@ -137,7 +137,7 @@ DWORD hw_nvidia_gettemperature( DWORD dwGPUIndex )
 	return temperature.sensor[0].currentTemp;
 }
 
-DWORD hw_nvidia_DynamicPstateInfoEx( DWORD dwGPUIndex ) {
+ULONG hw_nvidia_DynamicPstateInfoEx( DWORD dwGPUIndex ) {
 	NV_GPU_DYNAMIC_PSTATES_INFO_EX m_DynamicPStateInfo;
 	ZeroMemory( &m_DynamicPStateInfo, sizeof( NV_GPU_DYNAMIC_PSTATES_INFO_EX ) );
 	m_DynamicPStateInfo.version = NV_GPU_DYNAMIC_PSTATES_INFO_EX_VER;
@@ -152,7 +152,7 @@ DWORD hw_nvidia_DynamicPstateInfoEx( DWORD dwGPUIndex ) {
 }
 
 
-DWORD hw_nvidia_memory_util_prc( DWORD dwGPUIndex ) {
+ULONG hw_nvidia_memory_util_prc( DWORD dwGPUIndex ) {
 	NV_GPU_DYNAMIC_PSTATES_INFO_EX m_DynamicPStateInfo;
 	ZeroMemory( &m_DynamicPStateInfo, sizeof( NV_GPU_DYNAMIC_PSTATES_INFO_EX ) );
 	m_DynamicPStateInfo.version = NV_GPU_DYNAMIC_PSTATES_INFO_EX_VER;
@@ -166,7 +166,7 @@ DWORD hw_nvidia_memory_util_prc( DWORD dwGPUIndex ) {
 	return m_DynamicPStateInfo.utilization[1].percentage;
 }
 
-DWORD hw_nvidia_Pstate20 (DWORD dwGPUIndex) {
+ULONG hw_nvidia_Pstate20 (DWORD dwGPUIndex) {
 	NV_GPU_PERF_PSTATES20_INFO m_PStateInfo;
 	ZeroMemory( &m_PStateInfo, sizeof(NV_GPU_PERF_PSTATES20_INFO));
 	m_PStateInfo.version = NV_GPU_PERF_PSTATES_INFO_VER2;
@@ -180,7 +180,7 @@ DWORD hw_nvidia_Pstate20 (DWORD dwGPUIndex) {
 	return m_PStateInfo.pstates[0].clocks[0].data.single.freq_kHz;
 }
 
-DWORD hw_nvidia_memory (DWORD dwGPUIndex)
+ULONG hw_nvidia_memory (DWORD dwGPUIndex)
 {
 	NV_DISPLAY_DRIVER_MEMORY_INFO pMemoryInfo;
 	ZeroMemory(&pMemoryInfo, sizeof(NV_DISPLAY_DRIVER_MEMORY_INFO));
@@ -197,7 +197,7 @@ DWORD hw_nvidia_memory (DWORD dwGPUIndex)
 	return usedMemory;
 }
 
-DWORD hw_nvidia_memory_prc (DWORD dwGPUIndex)
+ULONG hw_nvidia_memory_prc (DWORD dwGPUIndex)
 {
 	NV_DISPLAY_DRIVER_MEMORY_INFO pMemoryInfo2;
 	ZeroMemory(&pMemoryInfo2, sizeof(NV_DISPLAY_DRIVER_MEMORY_INFO));
@@ -217,7 +217,7 @@ DWORD hw_nvidia_memory_prc (DWORD dwGPUIndex)
 	return usedMemoryPrc;
 }
 
-DWORD hw_nvidia_cooler (DWORD dwGPUIndex)
+ULONG hw_nvidia_cooler (DWORD dwGPUIndex)
 {
 	NvU32 speed = 0;
 
@@ -228,7 +228,7 @@ DWORD hw_nvidia_cooler (DWORD dwGPUIndex)
 	return speed;
 }
 
-DWORD hw_nvidia_fan (DWORD dwGPUIndex)
+ULONG hw_nvidia_fan (DWORD dwGPUIndex)
 {
 	NV_GPU_GETCOOLER_SETTINGS PCoolerSettings;
 	ZeroMemory(&PCoolerSettings, sizeof(NV_GPU_GETCOOLER_SETTINGS));
@@ -242,7 +242,7 @@ DWORD hw_nvidia_fan (DWORD dwGPUIndex)
 
 extern int bus_ids[8];
 extern int device_map[8];
-DWORD get_bus_ids()
+ULONG get_bus_ids()
 {
 	NvU32 busid;
 	for (int i=0; i < gpuCount; i++)
@@ -255,7 +255,7 @@ DWORD get_bus_ids()
 }
 
 
-DWORD get_bus_id(DWORD dwGPUindex)
+ULONG get_bus_id(DWORD dwGPUindex)
 {
 	NvU32 busid;
 	if ( NvAPI_GPU_GetBusId(nvGPUHandles[dwGPUindex], &busid) != NVAPI_OK )
@@ -263,7 +263,7 @@ DWORD get_bus_id(DWORD dwGPUindex)
 	return busid;
 }
 
-DWORD hw_nvidia_clock (DWORD dwGPUIndex)
+ULONG hw_nvidia_clock (DWORD dwGPUIndex)
 {
 	NV_GPU_CLOCK_FREQUENCIES pClockInfo;
 	ZeroMemory(&pClockInfo, sizeof(NV_GPU_CLOCK_FREQUENCIES));
@@ -280,7 +280,7 @@ DWORD hw_nvidia_clock (DWORD dwGPUIndex)
 	return pClockInfo.domain[NVAPI_GPU_PUBLIC_CLOCK_GRAPHICS].frequency/1000;
 }
 
-DWORD hw_nvidia_clockMemory (DWORD dwGPUIndex)
+ULONG hw_nvidia_clockMemory (DWORD dwGPUIndex)
 {
 	NV_GPU_CLOCK_FREQUENCIES pClockMemory;
 	ZeroMemory(&pClockMemory, sizeof(NV_GPU_CLOCK_FREQUENCIES));
@@ -296,22 +296,24 @@ DWORD hw_nvidia_clockMemory (DWORD dwGPUIndex)
 	return pClockMemory.domain[NVAPI_GPU_PUBLIC_CLOCK_MEMORY].frequency/1000;
 }
 
-DWORD hw_nvidia_voltage (DWORD dwGPUIndex)
+ULONG hw_nvidia_voltage (DWORD dwGPUIndex)
 {
 	NV_GPU_PERF_PSTATES20_INFO pPstatesInfo;
 	ZeroMemory(&pPstatesInfo, sizeof(NV_GPU_PERF_PSTATES20_INFO));
-
+	pPstatesInfo.version = NV_GPU_PERF_PSTATES20_INFO_VER;
+	
 	if( dwGPUIndex > gpuCount )
 		return -1;
-
+	 
 	if (NvAPI_GPU_GetPstates20(nvGPUHandles[dwGPUIndex], &pPstatesInfo) != NVAPI_OK)
 		return -1;
 
-	return pPstatesInfo.pstates[1].baseVoltages[0].volt_uV;
+	return pPstatesInfo.ov.voltages[0].volt_uV;
+	//return pPstatesInfo.pstates[0].baseVoltages[j].volt_uV;
 }
 
 
-DWORD hw_nvidia_version ()
+ULONG hw_nvidia_version ()
 {
 	NV_DISPLAY_DRIVER_VERSION version = {0}; 
 	version.version = NV_DISPLAY_DRIVER_VERSION_VER; 

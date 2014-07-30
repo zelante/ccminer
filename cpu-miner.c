@@ -51,12 +51,13 @@
 
 #define PROGRAM_NAME	"ccminer"
 #define PROGRAM_VERSION	"1.2"
-#define	PROGRAM_VERSION_SPLIT_SCREEN "1.2.6"
+#define	PROGRAM_VERSION_SPLIT_SCREEN "1.2.7"
 #define LP_SCANTIME		60
 #define HEAVYCOIN_BLKHDR_SZ		84
 #define MNR_BLKHDR_SZ 80
 #define AVERAGE_COUNT 50
-
+#define MAX_GPU_TEMP 64
+#define ABNORMAL_DATA 1000000
 // from heavy.cu
 #ifdef __cplusplus
 extern "C"
@@ -176,6 +177,7 @@ static bool opt_quiet = false;
 static int opt_retries = -1;
 static int opt_fail_pause = 30;
 int opt_timeout = 270;
+int terminal_height = 30;
 static int opt_scantime = 5;
 static json_t *opt_config;
 static const bool opt_time = true;
@@ -189,7 +191,7 @@ int device_map[8] =  {0,1,2,3,4,5,6,7}; // CB {9,9,9,9,9,9,9,9};
 int invert[8] = {0};
 int bus_ids[8] = {0};
 int device_map_invert[8] = {0,1,2,3,4,5,6,7};
-DWORD thermal_max[8] = {0};
+INT32 thermal_max[8] = {0};
 char *device_name[8]; // CB
 char *menu_key[10] = {"","","","","","","","","F9 ShowUser","F10 Exit"};	
 //DWORD *driver_version;
@@ -298,41 +300,10 @@ int printline(WINDOW *win, bool newline, const char *fmt, ...) {
 	return retval;
 }
 
-char* getdatetime() {
-    va_list args;
-    int retval;
-
-	char *fx;
-	int len;
-	time_t now;
-	struct tm tm, *tm_p;
-	
-	time(&now);
-
-	pthread_mutex_lock(&applog_lock);
-	tm_p = localtime(&now);
-	memcpy(&tm, tm_p, sizeof(tm));
-	pthread_mutex_unlock(&applog_lock);
-
-	len = (int)(29);
-	fx = (char*)alloca(len);
-	//datetime_start_mining = (char*)alloca(len);
-		
-	sprintf(fx, "[%d-%02d-%02d %02d:%02d:%02d]",
-		tm.tm_year + 1900,
-		tm.tm_mon + 1,
-		tm.tm_mday,
-		tm.tm_hour,
-		tm.tm_min,
-		tm.tm_sec
-		);
-	//pthread_mutex_lock(&applog_lock);
-	return fx;
-}
-
 static void destroywins(void) {
 	delwin(info_screen);
 	delwin(out_screen);
+	delwin(menu_screen);
     endwin();
 }
 
@@ -372,35 +343,40 @@ int nvapi_init(){
 
 void show_menu()
 {
-	mvwprintw(info_screen, infoscr_y-1, 0, "%21s", datetime_start_mining);
 	if (isWorkerShow)
-		mvwprintw(info_screen, infoscr_y-2, 0, "%s %s", rpc_url, rpc_user);
+		mvwprintw(info_screen, infoscr_y-3, 0, " %-89s", rpc_user);
 	else
-		mvwprintw(info_screen, infoscr_y-2, 0, "%-90s", rpc_url);
+		mvwprintw(info_screen, infoscr_y-3, 0, " %-89s", have_stratum ? &rpc_url[14] : rpc_url);
 	mvwprintw(menu_screen, 0, 0, "%s %s", menu_key[8], menu_key[9]);
 	updatescr();
 }
 
+time_t cur, start;
+struct tm * timestart,timecur;
+
 void start_info()
 {
+	
+	time ( &start );
+	timestart = localtime ( &start );
 	getmaxyx(info_screen, infoscr_y, infoscr_x);
-	datetime_start_mining = strdup(getdatetime());
-	//mvwprintw(info_screen, 0, 0, "                                                            NVIDIA driver %.2f", (float)(hw_nvidia_version()) / 100);
-	mvwprintw(info_screen, 2, 0, "| GPU |      Full name       |   Hashrate  |Temp |   Fan  |  Core  |       Memory        |");
-	mvwprintw(info_screen, 3, 0, "|   b |                      |   khash/s   |  C  | RPM(%%) |        |    MHz    | used MB |");
-	mvwprintw(info_screen, 4, 0, "| i u |                      |   cur/avrg  |cur/ |        |   MHz  |(controller|(used %%) |");
-	mvwprintw(info_screen, 5, 0, "| d s |                      |             |  max|        |(load %%)|  load %%)  |         |");
+	mvwprintw(info_screen, 0, 1, "Split Screen ccMiner %s by zelante_[ core: ccMiner %s ]_NVIDIA driver %3.2f",
+		PROGRAM_VERSION_SPLIT_SCREEN, PROGRAM_VERSION, (float)hw_nvidia_version() / 100);
+	mvwprintw(info_screen, 2, 0, "| GPU |     Full name       |   Hashrate  |Temp |   Fan   |  Core  |       Memory        |");
+	mvwprintw(info_screen, 3, 0, "|   b |                     |             |  C  |         |        |    MHz    |         |");
+	mvwprintw(info_screen, 4, 0, "| i u |                     |   khash/s   |cur/ |         |   MHz  |(controller| used MB |");
+	mvwprintw(info_screen, 5, 0, "| d s |                     |   cur/avrg  |  max|  RPM(%%) |(load %%)|  load %%)  |(used %%) |");
 }
 
 int gpuinfo(int id, double dif, double balance) {
 	int ret;
 	char *s;
-	unsigned int thermal_cur = 0;
+	INT32 thermal_cur = 0;
 	double average_hashrate = 0;
-	DWORD cooler = 0;
+	ULONG cooler = 0;
+	struct thr_info *thr;
+
 	pthread_mutex_lock(&applog_lock);
-	mvwprintw(info_screen, 0, 1, "Split Screen ccMiner %s by zelante_[ core: ccMiner %s ]_NVIDIA driver %.2f",
-		PROGRAM_VERSION_SPLIT_SCREEN, PROGRAM_VERSION, (float)(hw_nvidia_version()) / 100);
 
 	if (thr_average_hashrates_counter[id] < AVERAGE_COUNT)
 		thr_average_hashrates_counter[id]++;
@@ -415,49 +391,39 @@ int gpuinfo(int id, double dif, double balance) {
 	average_hashrate = average_hashrate / AVERAGE_COUNT;
 
 	thermal_cur = hw_nvidia_gettemperature(invert[id]);
+
 	if (thermal_max[invert[id]] < thermal_cur) 
 		thermal_max[invert[id]] = thermal_cur;
 	cooler = hw_nvidia_cooler(invert[id]);
-	if ( cooler == NULL || cooler > 9999 || cooler < 0)
-	{
-		ret=mvwprintw(info_screen, id+7, 0, " #%1d[%1d] %22s %6.0f/%-6.0f %2lu/%2lu   (%2lu)   %4lu(%2lu)   %4lu(%2lu)   %4lu(%2lu)", 
-			device_map[id], 
-			invert[id]+1,
-			device_name[id],
-			thr_hashrates[id] * 1e-3,
-			average_hashrate * 1e-3,
-			thermal_cur,
-			thermal_max[invert[id]],
-			hw_nvidia_fan(invert[id]),
-			hw_nvidia_clock(invert[id]),
-			hw_nvidia_DynamicPstateInfoEx(invert[id]),
-			hw_nvidia_clockMemory(invert[id]),
-			hw_nvidia_memory_util_prc(invert[id]),
-			hw_nvidia_memory(invert[id]),
-			hw_nvidia_memory_prc(invert[id])
-			);
-	} else
-	{
-		ret=mvwprintw(info_screen, id+7, 0, " #%1d[%1d] %22s %6.0f/%-6.0f %2lu/%2lu %4lu(%2lu) %4lu(%2lu)   %4lu(%2lu)   %4lu(%2lu)", 
-			device_map[id], 
-			invert[id]+1,
-			device_name[id],
-			thr_hashrates[id] * 1e-3,
-			average_hashrate * 1e-3,
-			thermal_cur,
-			thermal_max[invert[id]],
-			cooler,
-			hw_nvidia_fan(invert[id]),
-			hw_nvidia_clock(invert[id]),
-			hw_nvidia_DynamicPstateInfoEx(invert[id]),
-			hw_nvidia_clockMemory(invert[id]),
-			hw_nvidia_memory_util_prc(invert[id]),
-			hw_nvidia_memory(invert[id]),
-			hw_nvidia_memory_prc(invert[id])
-			);
-	}
-	updatescr();
+	//pthread_mutex_lock(&applog_lock);
+	ret=mvwprintw(info_screen, id+7, 0, " #%1d[%1d] %-21s %6.0f/%-6.0f %2d/%2d %4lu(%3lu) %4lu(%2lu)   %4lu(%2lu)   %4lu(%2lu)", 
+		device_map[id], 
+		invert[id]+1,
+		device_name[id],
+		thr_hashrates[id] * 1e-3,
+		average_hashrate * 1e-3,
+		thermal_cur < ABNORMAL_DATA ? thermal_cur : 0,
+		thermal_max[invert[id]] < ABNORMAL_DATA ? thermal_max[invert[id]] : 0,
+		cooler < ABNORMAL_DATA ? cooler : 0,
+		hw_nvidia_fan(invert[id]) < ABNORMAL_DATA ? hw_nvidia_fan(invert[id]) : 0,
+		hw_nvidia_clock(invert[id]) < ABNORMAL_DATA ? hw_nvidia_clock(invert[id]) : 0,
+		hw_nvidia_DynamicPstateInfoEx(invert[id]) < ABNORMAL_DATA ? hw_nvidia_DynamicPstateInfoEx(invert[id]) : 0,
+		hw_nvidia_clockMemory(invert[id]) < ABNORMAL_DATA ? hw_nvidia_clockMemory(invert[id]) : 0,
+		hw_nvidia_memory_util_prc(invert[id]) < ABNORMAL_DATA ? hw_nvidia_memory_util_prc(invert[id]) : 0,
+		hw_nvidia_memory(invert[id]) < ABNORMAL_DATA ? hw_nvidia_memory(invert[id]) : 0,
+		hw_nvidia_memory_prc(invert[id]) < ABNORMAL_DATA ? hw_nvidia_memory_prc(invert[id]) : 0
+	);
+	time( &cur );
+	double num_seconds = difftime(cur, start);
+	int days = num_seconds / 86400;
+	int remainder = (int)num_seconds % 86400;
+	int hours = remainder / 3600; 
+	remainder = remainder % 3600;
+	int minutes = remainder / 60; 
+	//int seconds = remainder % 60;
+	mvwprintw(info_screen, infoscr_y - 4, 0, " %dd %02d:%02d from start", days, hours, minutes);
 	pthread_mutex_unlock(&applog_lock);
+	updatescr();
 	return ret;
 }
 
@@ -516,6 +482,7 @@ Options:\n\
   -c, --config=FILE     load a JSON-format configuration file\n\
   -V, --version         display version information and exit\n\
   -h, --help            display this help text and exit\n\
+      --height          height of terminal window\n\
 ";
 
 static char const short_options[] =
@@ -537,6 +504,7 @@ static struct option const options[] = {
 	{ "config", 1, NULL, 'c' },
 	{ "debug", 0, NULL, 'D' },
 	{ "help", 0, NULL, 'h' },
+	{ "height", 1, NULL, 1006 },
 	{ "no-longpoll", 0, NULL, 1003 },
 	{ "no-stratum", 0, NULL, 1007 },
 	{ "pass", 1, NULL, 'p' },
@@ -624,7 +592,6 @@ static bool work_decode(const json_t *val, struct work *work)
 		work->data[i] = le32dec(work->data + i);
 	for (i = 0; i < ARRAY_SIZE(work->target); i++)
 		work->target[i] = le32dec(work->target + i);
-
 	return true;
 
 err_out:
@@ -1148,13 +1115,15 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 		       work->job_id, xnonce2str, swab32(work->data[17]));
 		free(xnonce2str);
 	}
-
 	if (opt_algo == ALGO_JACKPOT)
 		diff_to_target(work->target, sctx->job.diff / (65536.0 * opt_difficulty));
 	else if (opt_algo == ALGO_FUGUE256 || opt_algo == ALGO_GROESTL || opt_algo == ALGO_DMD_GR)
 		diff_to_target(work->target, sctx->job.diff / (256.0 * opt_difficulty));
 	else
 		diff_to_target(work->target, sctx->job.diff / opt_difficulty);
+		 
+	mvwprintw(info_screen, infoscr_y-2, 0, " pool set diff to %lg", sctx->job.diff);
+
 }
 
 static void *miner_thread(void *userdata)
@@ -1841,6 +1810,10 @@ static void parse_arg (int key, char *arg)
 	case 1003:
 		want_longpoll = false;
 		break;
+	case 1006:
+		if (atoi(arg) > 30)
+			terminal_height = atoi(arg);
+		break;
 	case 1007:
 		want_stratum = false;
 		break;
@@ -2036,7 +2009,6 @@ int main(int argc, char *argv[])
 
 	//cuda_devicenames();
 	//num_processors = cuda_num_devices();
-	//gpuinfo();
 
 	pthread_mutex_init(&applog_lock, NULL);
 	num_processors = cuda_num_devices();
@@ -2051,7 +2023,6 @@ int main(int argc, char *argv[])
 	get_bus_ids();
 
 
-//	gpuinfo();
 
 	//for (int i = 0; i < num_processors-1; i++)
 
@@ -2116,17 +2087,19 @@ int main(int argc, char *argv[])
 		openlog("cpuminer", LOG_PID, LOG_USER);
 #endif
 
-	SetWindow(90,30);
+	SetWindow(90,terminal_height);
 	initscr();
 	noecho();
 	raw();
 	cbreak();
 	curs_set(0);
 
+	int info_scr_y = 12 + opt_n_threads;
+
 	getmaxyx(stdscr, parent_y, parent_x);
 	// set up initial windows
-	info_screen = newwin(parent_y / 2 + 3, parent_x, 0, 0);
-	out_screen = newwin(parent_y /2 - 4, parent_x, parent_y / 2 + 3 , 0);
+	info_screen = newwin(info_scr_y, parent_x, 0, 0);
+	out_screen = newwin(parent_y - info_scr_y - 1, parent_x, info_scr_y, 0);
 	menu_screen = newwin(1, parent_x, parent_y - 1, 0);
 	wborder(info_screen,' ', ' ', '_', '_', '_', '_', '_', '_');
 	scrollok(out_screen, TRUE);
@@ -2170,6 +2143,8 @@ int main(int argc, char *argv[])
 	thr_hashrates = (double *) calloc(opt_n_threads, sizeof(double));
 	if (!thr_hashrates)
 		return 1;
+
+	//pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
 	/* init workio thread info */
 	work_thr_id = opt_n_threads;
